@@ -1,0 +1,23 @@
+# FaithfulCut
+
+FaithfulCut replays commit-aware test selection on real long-running CI test suites. Each component sees only the feedback it would have in deployment: outcomes of tests it ran or audited, and only after their builds finished. The study measures what selection saves and risks under that feedback, and calibrates the selection cut from random full-suite audits.
+
+## Setup
+
+Python 3.11 or later.
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+## Inputs
+
+The study uses the LRTS dataset of long-running test suites.
+
+| Variable | Points to |
+| --- | --- |
+| `LRTS_REPO` | A clone of [LRTS](https://github.com/lrtsuser/LRTS) checked out at commit `2c1b68e9b1d4ec6c4f304869e36af2e3168da889` |
+| `LRTS_DIR` | The unpacked processed LRTS release (`long_running_test_suites.zip`, linked from the LRTS README) |
+
+The runs studied are those listed in `$LRTS_REPO/artifact/metadata/dataset.csv`. Its SHA-256 is `49570f8dca753c385f25346f8aaaded3a841b0e67dabf36fbb67260a79b02987`.
