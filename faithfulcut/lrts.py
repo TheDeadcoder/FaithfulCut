@@ -32,6 +32,13 @@ def load_runs(project: str) -> pd.DataFrame:
     return runs.reset_index(drop=True)
 
 
+def load_builds(project: str) -> pd.DataFrame:
+    builds = load_runs(project).drop_duplicates(["pr_name", "build_id"]).drop(columns="stage_id")
+    builds = builds.sort_values(["start", "pr_name", "build_id"], kind="stable").reset_index(drop=True)
+    builds["position"] = builds.index / len(builds)
+    return builds
+
+
 def build_name(pr_name: str, build_id: int) -> str:
     return f"{pr_name}_build{build_id}"
 
