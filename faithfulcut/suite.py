@@ -7,9 +7,9 @@ import pandas as pd
 
 from faithfulcut import lrts
 
-VERSION = 1
+VERSION = 2
 BUILD_COLUMNS = ["pr_name", "build_id", "trunk_sha", "build_head_sha", "start", "finish", "position"]
-ROW_ARRAYS = ["offsets", "cls", "failed", "failed_everywhere", "duration"]
+ROW_ARRAYS = ["offsets", "cls", "failed", "failed_everywhere", "duration", "files", "file_offsets", "file_ids"]
 
 
 @dataclass
@@ -22,9 +22,15 @@ class Suite:
     failed: np.ndarray
     failed_everywhere: np.ndarray
     duration: np.ndarray
+    files: np.ndarray
+    file_offsets: np.ndarray
+    file_ids: np.ndarray
 
     def rows(self, t: int) -> slice:
         return slice(self.offsets[t], self.offsets[t + 1])
+
+    def changed(self, t: int) -> np.ndarray:
+        return self.file_ids[self.file_offsets[t]:self.file_offsets[t + 1]]
 
     def build_of_rows(self) -> np.ndarray:
         return np.repeat(np.arange(len(self.builds)), np.diff(self.offsets))
@@ -34,6 +40,7 @@ def build_suite(project: str) -> Suite:
     builds = lrts.load_builds(project)
     stages = lrts.load_runs(project).groupby(["pr_name", "build_id"])["stage_id"].apply(list)
     index, offsets, parts = {}, [0], []
+    file_index, file_offsets, file_parts = {}, [0], []
     for b in builds.itertuples(index=False):
         results = pd.concat([lrts.read_results(project, b.pr_name, b.build_id, s) for s in stages[(b.pr_name, b.build_id)]])
         per_class = results.groupby("testclass").agg(
@@ -43,9 +50,13 @@ def build_suite(project: str) -> Suite:
         parts.append((ids, per_class["failed"].to_numpy() == 1, per_class["everywhere"].to_numpy() == 1,
                       per_class["duration"].to_numpy()))
         offsets.append(offsets[-1] + len(ids))
+        changed = lrts.changed_files(project, b.pr_name, b.build_id, b.trunk_sha, b.build_head_sha)
+        file_parts.append(np.array([file_index.setdefault(f, len(file_index)) for f in changed], dtype=np.int32))
+        file_offsets.append(file_offsets[-1] + len(changed))
     cls, failed, everywhere, duration = (np.concatenate(p) for p in zip(*parts))
     return Suite(project, np.array(list(index)), builds[BUILD_COLUMNS], np.array(offsets), cls, failed, everywhere,
-                 duration)
+                 duration, np.array(list(file_index), dtype=str), np.array(file_offsets),
+                 np.concatenate(file_parts + [np.empty(0, np.int32)]))
 
 
 def cache_path(project: str) -> Path | None:
