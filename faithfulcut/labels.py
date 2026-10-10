@@ -76,6 +76,21 @@ def operational(suite: Suite, seed: int, issues: pd.DataFrame | None = None, win
     return label
 
 
+def load_operational(suite: Suite, seed: int) -> np.ndarray:
+    """`operational` for the default parameters, cached per project and seed."""
+    root = os.environ.get("FAITHFULCUT_CACHE")
+    path = Path(root) / f"operational-v{VERSION}" / f"{suite.project}-{seed}.npy" if root else None
+    if path is not None and path.exists():
+        return np.load(path)
+    label = operational(suite, seed)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial = path.with_name(f"{path.stem}.{os.getpid()}.partial.npy")
+        np.save(partial, label)
+        os.replace(partial, path)
+    return label
+
+
 def _transfer_path(project: str) -> Path | None:
     root = os.environ.get("FAITHFULCUT_CACHE")
     return Path(root) / f"transfer-v{VERSION}" / f"{project}.npz" if root else None

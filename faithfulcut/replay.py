@@ -96,7 +96,7 @@ class Replay:
 
 
 def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.ndarray, absent: np.ndarray,
-              full_run: bool, by_audit: bool, pi: float, retire_after: int):
+              full_run: bool, by_audit: bool, pi: float, retire_after: int | None):
     rows = suite.rows(t)
     seen = np.ones(len(selected), dtype=bool) if full_run or regime != "faithful" else selected
     if by_audit and regime == "faithful":
@@ -105,11 +105,12 @@ def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.
         weight = np.ones(int(seen.sum()))
     history.observe(suite.cls[rows][seen], suite.failed[rows][seen], suite.duration[rows][seen], weight,
                     suite.changed(t))
-    history.miss(absent, retire_after)
+    if retire_after is not None:
+        history.miss(absent, retire_after)
 
 
 def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed: int = 0,
-           warmup: float = 0.2, retire_after: int = 3, label: np.ndarray | None = None, feedback: str = "audits",
+           warmup: float = 0.2, retire_after: int | None = None, label: np.ndarray | None = None, feedback: str = "audits",
            cap: float = np.inf, monitor: Monitor | None = None, hold: int = 20) -> Replay:
     """Replay the suite under one information regime.
 
