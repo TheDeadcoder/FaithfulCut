@@ -5,6 +5,7 @@ from typing import Callable
 
 import numpy as np
 
+from faithfulcut.control import AUDIT, ORACLE, WARMUP, FixedCut, Monitor
 from faithfulcut.suite import Suite
 
 REGIMES = ("full", "timed", "faithful")
@@ -86,6 +87,9 @@ class Replay:
     depth: np.ndarray
     selected: np.ndarray
     history: History
+    # why a build ran in full regardless of its cut: 0 it did not, 1 warm-up, 2 size cap, 3 alarm
+    reason: np.ndarray
+    cut: object
 
     def executed(self, suite: Suite) -> np.ndarray:
         return self.selected | np.repeat(self.audited | self.forced, np.diff(suite.offsets))
@@ -104,44 +108,69 @@ def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.
     history.miss(absent, retire_after)
 
 
-def replay(suite: Suite, regime: str, scorer: Scorer, lam: float, pi: float = 0.0, seed: int = 0,
-           warmup: float = 0.2, retire_after: int = 3) -> Replay:
+def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed: int = 0,
+           warmup: float = 0.2, retire_after: int = 3, label: np.ndarray | None = None, feedback: str = "audits",
+           cap: float = np.inf, monitor: Monitor | None = None, hold: int = 20) -> Replay:
+    """Replay the suite under one information regime.
+
+    `lam` is a fixed cut or a controller; with a per-row `label`, every faulty build seen in full (warm-up or
+    coin audit, or every faulty build when feedback is "all") reaches the controller when it finishes.
+    """
     if regime not in REGIMES:
         raise ValueError(f"unknown regime {regime}")
+    cut = lam if hasattr(lam, "decide") else FixedCut(lam)
     n_builds, n_classes, n_rows = len(suite.builds), len(suite.names), len(suite.cls)
     start = suite.builds["start"].to_numpy()
     finish = suite.builds["finish"].to_numpy()
-    forced = suite.builds["position"].to_numpy() < warmup
+    warm = suite.builds["position"].to_numpy() < warmup
     audited = audit_coins(seed, n_builds) < pi
     history = History(n_classes)
     rep = Replay(
-        lam=np.full(n_builds, lam, dtype=float), audited=audited, forced=forced,
+        lam=np.zeros(n_builds), audited=audited, forced=np.zeros(n_builds, dtype=bool),
         known=np.zeros(n_builds, dtype=np.int64), full_cost=np.zeros(n_builds), base_cost=np.zeros(n_builds),
         executed_cost=np.zeros(n_builds), seconds=np.zeros(n_builds),
         depth=np.zeros(n_rows, dtype=np.float32), selected=np.zeros(n_rows, dtype=bool), history=history,
+        reason=np.zeros(n_builds, dtype=np.int8), cut=cut,
     )
-    pending, notes = [], {}
+    forced = rep.forced
+    pending, notes, alarm_until = [], {}, -1
 
-    def deliver(u: int):
+    def deliver(u: int, now: int):
+        nonlocal alarm_until
         _feedback(history, suite, regime, u, *notes.pop(u), audited[u] or forced[u], audited[u] and not forced[u],
                   pi, retire_after)
+        if label is None:
+            return
+        rows = suite.rows(u)
+        labeled = label[rows]
+        kind = WARMUP if warm[u] else AUDIT if audited[u] else ORACLE if feedback == "all" else None
+        if kind is None or not labeled.any():
+            return
+        caught = bool((rep.selected[rows] & labeled).any())
+        cut.observe(u, rep.depth[rows][labeled].astype(float), caught, kind)
+        if monitor is not None and kind == AUDIT and monitor.update(0.0 if caught else 1.0):
+            alarm_until = max(alarm_until, now + hold)
 
     for t in range(n_builds):
         while pending and pending[0][0] <= start[t]:
-            deliver(heapq.heappop(pending)[1])
+            deliver(heapq.heappop(pending)[1], t)
         clock = perf_counter()
         rows = suite.rows(t)
         cls = suite.cls[rows]
+        lam_t = cut.decide(t, bool(warm[t]))
         catalog = history.catalog()
         order = catalog[np.lexsort((tie_breaks(seed, t, n_classes)[catalog], scorer(history, t)[catalog]))]
         cumulative = np.cumsum(history.last_duration[order])
         depth_by_class = np.full(n_classes, -np.inf)
         depth_by_class[order] = cumulative / cumulative[-1] if len(order) and cumulative[-1] > 0 else 0.0
         depth = depth_by_class[cls]
-        selected = depth <= lam
+        selected = depth <= lam_t
         rep.seconds[t] = perf_counter() - clock
 
+        rep.reason[t] = 1 if warm[t] else 2 if lam_t >= cap else 3 if t < alarm_until else 0
+        forced[t] = rep.reason[t] > 0
         duration = suite.duration[rows]
+        rep.lam[t] = lam_t
         rep.depth[rows], rep.selected[rows], rep.known[t] = depth, selected, len(catalog)
         rep.full_cost[t], rep.base_cost[t] = duration.sum(), duration[selected].sum()
         full_run = audited[t] or forced[t]
@@ -149,12 +178,12 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam: float, pi: float = 0.
 
         present = np.zeros(n_classes, dtype=bool)
         present[cls] = True
-        checked = catalog if full_run or regime != "faithful" else catalog[depth_by_class[catalog] <= lam]
+        checked = catalog if full_run or regime != "faithful" else catalog[depth_by_class[catalog] <= lam_t]
         notes[t] = (selected, checked[~present[checked]])
         if regime == "full":
-            deliver(t)
+            deliver(t, t + 1)
         else:
             heapq.heappush(pending, (finish[t], t))
     while pending:
-        deliver(heapq.heappop(pending)[1])
+        deliver(heapq.heappop(pending)[1], n_builds)
     return rep
