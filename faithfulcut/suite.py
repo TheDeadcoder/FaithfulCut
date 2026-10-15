@@ -35,6 +35,14 @@ class Suite:
     def build_of_rows(self) -> np.ndarray:
         return np.repeat(np.arange(len(self.builds)), np.diff(self.offsets))
 
+    def before(self, position: float) -> "Suite":
+        """The builds whose position is below `position`; later builds are never replayed."""
+        n = int((self.builds["position"].to_numpy() < position).sum())
+        r, f = self.offsets[n], self.file_offsets[n]
+        return Suite(self.project, self.names, self.builds.iloc[:n].reset_index(drop=True), self.offsets[:n + 1],
+                     self.cls[:r], self.failed[:r], self.failed_everywhere[:r], self.duration[:r], self.files,
+                     self.file_offsets[:n + 1], self.file_ids[:f])
+
 
 def build_suite(project: str) -> Suite:
     builds = lrts.load_builds(project)

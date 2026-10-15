@@ -40,3 +40,29 @@ python scripts/clone_repos.py
 ```bash
 python scripts/build_ir.py
 ```
+
+## Experiments
+
+Labels for every audit seed are computed once, then each configuration runs in parallel. Results go to `data/results/<name>`.
+
+```bash
+python scripts/build_labels.py
+```
+
+```bash
+python scripts/run_experiments.py configs/dev.toml
+```
+
+```bash
+python scripts/analyze.py data/results/dev
+```
+
+```bash
+python scripts/drift.py
+```
+
+The LLM relevance pilot reads an API key from `GEMINI_API_KEY` and keeps every response in `FAITHFULCUT_CACHE`:
+
+```bash
+python scripts/llm_pilot.py
+```
