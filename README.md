@@ -24,3 +24,9 @@ The study uses the LRTS dataset of long-running test suites.
 The runs studied are those listed in `$LRTS_REPO/artifact/metadata/dataset.csv`. Its SHA-256 is `49570f8dca753c385f25346f8aaaded3a841b0e67dabf36fbb67260a79b02987`.
 
 When both variables are set, `pytest` also checks the pinned inputs and the consistency of the data.
+
+Operational failure labels need the creation times of the issues in LRTS's flaky-test list. Fetch them once into `FAITHFULCUT_CACHE` from the public JIRA and GitHub APIs:
+
+```bash
+python scripts/fetch_flaky_issues.py
+```
