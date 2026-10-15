@@ -1,5 +1,6 @@
 notes/
 DEVIATIONS.md
+data/
 
 __pycache__/
 *.py[cod]

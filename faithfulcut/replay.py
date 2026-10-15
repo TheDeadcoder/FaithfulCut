@@ -29,11 +29,14 @@ class History:
         self.weighted_fails = np.zeros(n_classes)
         self.since_fail = np.zeros(n_classes)
         self.last_duration = np.zeros(n_classes)
+        self.cofails = {}
+        self.weighted_cofails = {}
 
     def catalog(self) -> np.ndarray:
         return np.flatnonzero(self.known & ~self.retired)
 
-    def observe(self, cls: np.ndarray, failed: np.ndarray, duration: np.ndarray, weight: np.ndarray):
+    def observe(self, cls: np.ndarray, failed: np.ndarray, duration: np.ndarray, weight: np.ndarray,
+                files: np.ndarray):
         self.known[cls] = True
         self.retired[cls] = False
         self.absent[cls] = 0
@@ -43,6 +46,23 @@ class History:
         self.weighted_fails[cls] += weight * failed
         self.since_fail[cls] = np.where(failed, 1, self.since_fail[cls] + 1)
         self.last_duration[cls] = duration
+        failing = list(zip(cls[failed].tolist(), weight[failed].tolist()))
+        for f in files.tolist():
+            counts = self.cofails.setdefault(f, {})
+            weighted = self.weighted_cofails.setdefault(f, {})
+            for c, w in failing:
+                counts[c] = counts.get(c, 0.0) + 1.0
+                weighted[c] = weighted.get(c, 0.0) + w
+
+    def max_cofail(self, files: np.ndarray, weighted: bool = False) -> np.ndarray:
+        table = self.weighted_cofails if weighted else self.cofails
+        best = np.zeros(len(self.known))
+        for f in files.tolist():
+            counts = table.get(f)
+            if counts:
+                np.maximum.at(best, np.fromiter(counts, np.int64, len(counts)),
+                              np.fromiter(counts.values(), float, len(counts)))
+        return best
 
     def miss(self, cls: np.ndarray, retire_after: int):
         self.absent[cls] += 1
@@ -79,7 +99,8 @@ def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.
         weight = np.where(selected, 1.0, 1.0 / pi)[seen]
     else:
         weight = np.ones(int(seen.sum()))
-    history.observe(suite.cls[rows][seen], suite.failed[rows][seen], suite.duration[rows][seen], weight)
+    history.observe(suite.cls[rows][seen], suite.failed[rows][seen], suite.duration[rows][seen], weight,
+                    suite.changed(t))
     history.miss(absent, retire_after)
 
 
