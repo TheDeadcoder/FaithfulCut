@@ -88,15 +88,16 @@ def main():
     parser.add_argument("--model", default="gemini-3.5-flash-lite")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--limit", type=int, help="query only the first N builds of the sample, for a trial run")
     args = parser.parse_args()
-    picked = pilot_builds(args.projects, args.size, args.seed)
+    picked = pilot_builds(args.projects, args.size, args.seed)[:args.limit]
     rows = []
     for project in sorted({p for p, _ in picked}):
         rows += evaluate(project, [t for p, t in picked if p == project], args.model, args.dry_run, args.workers)
     df = pd.DataFrame(rows)
     out = Path("data") / "results" / "llm-pilot"
     out.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out / ("dry-run.csv" if args.dry_run else "builds.csv"), index=False)
+    df.to_csv(out / ("dry-run.csv" if args.dry_run else f"builds-{args.model}.csv"), index=False)
     orders = [o for o in ("QTF", "LatestFail+CC", "TF-IDF+CC", "LLM") if o in df]
     print(f"{len(df)} builds; first-failure recall at {BUDGET:.0%} of predicted time:")
     print(df[orders].mean().round(3).to_string())

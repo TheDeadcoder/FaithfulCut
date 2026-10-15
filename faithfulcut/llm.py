@@ -1,6 +1,8 @@
 import heapq
 import json
 import os
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -11,7 +13,11 @@ import numpy as np
 from faithfulcut import lrts
 from faithfulcut.suite import Suite
 
-ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+API_KEY_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+ADC_ENDPOINT = ("https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}"
+                "/publishers/google/models/{model}:generateContent")
+_token = {"value": None, "expires": 0.0}
+_token_lock = threading.Lock()
 RISK = {"high": 0, "medium": 1, "low": 2}
 PROMPT = """A pull request changed the code shown in the diff below. The project's test classes are listed after it.
 Name the test classes most likely to FAIL because of this change, highest risk first.
@@ -55,22 +61,44 @@ def prompt(suite: Suite, t: int, catalog: np.ndarray, max_diff_chars: int = 2400
     return PROMPT.format(limit=limit, diff=diff[:max_diff_chars], catalog="\n".join(suite.names[catalog]))
 
 
+def _adc_token() -> str:
+    """A short-lived access token from Application Default Credentials, refreshed well before it expires."""
+    with _token_lock:
+        if _token["value"] is None or time.time() > _token["expires"]:
+            _token["value"] = subprocess.run(["gcloud", "auth", "application-default", "print-access-token"],
+                                             capture_output=True, text=True, check=True).stdout.strip()
+            _token["expires"] = time.time() + 45 * 60
+        return _token["value"]
+
+
+def _request(model: str, body: bytes) -> urllib.request.Request:
+    """API key when GEMINI_API_KEY is set; otherwise Application Default Credentials on GOOGLE_CLOUD_PROJECT."""
+    headers = {"Content-Type": "application/json"}
+    if os.environ.get("GEMINI_API_KEY"):
+        headers["x-goog-api-key"] = os.environ["GEMINI_API_KEY"]
+        return urllib.request.Request(API_KEY_ENDPOINT.format(model=model), data=body, headers=headers)
+    project = os.environ["GOOGLE_CLOUD_PROJECT"]
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+    headers.update({"Authorization": f"Bearer {_adc_token()}", "X-Goog-User-Project": project})
+    url = ADC_ENDPOINT.format(project=project, location=location, model=model)
+    return urllib.request.Request(url, data=body, headers=headers)
+
+
 def ask(text: str, model: str, retries: int = 5) -> dict:
     """One synchronous generateContent call; returns the response JSON with the measured latency."""
     body = json.dumps({
-        "contents": [{"parts": [{"text": text}]}],
+        "contents": [{"role": "user", "parts": [{"text": text}]}],
         "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
     }).encode()
-    request = urllib.request.Request(ENDPOINT.format(model=model), data=body, headers={
-        "Content-Type": "application/json", "x-goog-api-key": os.environ["GEMINI_API_KEY"]})
     for attempt in range(retries):
         clock = time.perf_counter()
         try:
-            with urllib.request.urlopen(request, timeout=300) as response:
+            with urllib.request.urlopen(_request(model, body), timeout=300) as response:
                 return {**json.load(response), "latency": time.perf_counter() - clock}
         except urllib.error.HTTPError as error:
             if error.code not in (429, 500, 502, 503, 504) or attempt == retries - 1:
-                raise
+                detail = error.read().decode(errors="ignore")[:500]
+                raise RuntimeError(f"{model}: HTTP {error.code}: {detail}") from error
         except (urllib.error.URLError, TimeoutError):
             if attempt == retries - 1:
                 raise
