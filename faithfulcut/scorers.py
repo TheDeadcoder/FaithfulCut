@@ -34,3 +34,15 @@ def history_scorers(suite: Suite) -> dict[str, Scorer]:
     base = {"LatestFail": latestfail, "FailCount": failcount, "FailCount-W": failcount_w,
             "TF-FailFreq": tf_failfreq, "TF-FailFreq-W": tf_failfreq_w}
     return {"QTF": qtf, **base, **{f"{name}+CC": cost_cognizant(f) for name, f in base.items()}}
+
+
+def ir_scorers(suite: Suite, ir: dict[str, np.ndarray]) -> dict[str, Scorer]:
+    """LRTS's TF-IDF relevance of each class's test sources to the build's diff, plain and cost-cognizant."""
+
+    def tfidf(h: History, t: int) -> np.ndarray:
+        scores = np.zeros(len(suite.names))
+        part = slice(ir["offsets"][t], ir["offsets"][t + 1])
+        scores[ir["cls"][part]] = ir["score"][part]
+        return 1 / (scores + EPS)
+
+    return {"TF-IDF": tfidf, "TF-IDF+CC": lambda h, t: tfidf(h, t) * (h.last_duration + EPS)}

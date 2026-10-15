@@ -30,3 +30,13 @@ Operational failure labels need the creation times of the issues in LRTS's flaky
 ```bash
 python scripts/fetch_flaky_issues.py
 ```
+
+TF-IDF relevance reads test sources from bare clones of the ten upstream repositories, also kept in `FAITHFULCUT_CACHE`:
+
+```bash
+python scripts/clone_repos.py
+```
+
+```bash
+python scripts/build_ir.py
+```
