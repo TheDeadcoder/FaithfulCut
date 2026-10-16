@@ -32,3 +32,18 @@ def apfdc(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndarray) -> n
         tail = np.cumsum(d[::-1])[::-1]
         values[t] = (tail[f] - d[f] / 2).sum() / (f.sum() * d.sum())
     return values
+
+
+def first_failure_time(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndarray) -> np.ndarray:
+    """Test time until each build's first labeled failure among the classes it ran, unseen classes first and then
+    by depth; NaN where no labeled failure ran."""
+    executed = rep.executed(suite)
+    out = np.full(len(suite.builds), np.nan)
+    for t in np.flatnonzero(builds):
+        rows = suite.rows(t)
+        order = np.argsort(rep.depth[rows], kind="stable")
+        ran = executed[rows][order]
+        hit = label[rows][order] & ran
+        if hit.any():
+            out[t] = np.cumsum(np.where(ran, suite.duration[rows][order], 0.0))[np.argmax(hit)]
+    return out

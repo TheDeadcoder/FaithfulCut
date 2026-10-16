@@ -1,3 +1,4 @@
+import heapq
 import os
 from pathlib import Path
 
@@ -138,3 +139,19 @@ def transfer(suite: Suite, stage_rule: str | None = None) -> dict[str, np.ndarra
     if stage_rule == "ran":
         return {label: flags[f"{label}_nostage"] & suite.failed_everywhere for label in lrts_ref.LABELS}
     raise ValueError(f"unknown stage rule {stage_rule}")
+
+
+def cold_rows(suite: Suite, k: int = 5) -> np.ndarray:
+    """Rows whose class had run in at least one but fewer than `k` builds finished before the build started."""
+    start, finish = suite.builds["start"].to_numpy(), suite.builds["finish"].to_numpy()
+    runs = np.zeros(len(suite.names), dtype=np.int64)
+    out = np.zeros(len(suite.cls), dtype=bool)
+    pending = []
+    for t in range(len(suite.builds)):
+        while pending and pending[0][0] <= start[t]:
+            runs[suite.cls[suite.rows(heapq.heappop(pending)[1])]] += 1
+        rows = suite.rows(t)
+        seen = runs[suite.cls[rows]]
+        out[rows] = (seen >= 1) & (seen < k)
+        heapq.heappush(pending, (finish[t], t))
+    return out
