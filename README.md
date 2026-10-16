@@ -76,10 +76,16 @@ With `per_build = true` in a configuration's `[price]` or `[control]` section, e
 python scripts/tune_budgets.py data/results/dev --out tuned_budgets.csv
 ```
 
-The hypothesis tests read the per-build outcomes of a price grid and a controller run, and report pull-request bootstrap intervals with Holm-adjusted p-values:
+The registered tests and tables read the per-build outcomes of the price grids and the main controller run, and report pull-request bootstrap intervals with Holm-adjusted p-values, as markdown and JSON:
 
 ```bash
-python scripts/report.py --price data/results/dev-full/price-main --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out report.md
+python scripts/report.py --price data/results/dev-full/price-main data/results/dev-full/price-rest --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/core.md
+```
+
+`PREREGISTRATION.md` fixes the hypotheses, settings and analysis for the held-out builds. One command runs every registered configuration on the confirmatory split, then the report:
+
+```bash
+python scripts/run_core.py
 ```
 
 ```bash

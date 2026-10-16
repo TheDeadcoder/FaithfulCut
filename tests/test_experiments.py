@@ -6,7 +6,8 @@ import pytest
 from synthetic import make_suite, random_suite
 
 from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cluster_weights, compare,
-                                  condition_sums, energy, holm, ranking_flips, replicate_rates, tuned_budgets)
+                                  condition_sums, energy, holm, kendall_tau, load_outcomes, one_sided, ranking_flips,
+                                  replicate_rates, significant_flips, tuned_budgets)
 from faithfulcut.control import FixedCut
 from faithfulcut.experiments import make_controller, summarize
 from faithfulcut.labels import cold_rows
@@ -176,3 +177,40 @@ def test_ranking_flips_count_pairs_that_change_order():
     assert flips.loc["p", "flips"] == 1 and flips.loc["p", "flipped"] == "a / b"
     assert flips.loc["q", "flips"] == 0 and flips.loc["q", "tau"] == pytest.approx(1.0)
     assert flips.loc["macro", "orders"] == 3
+
+
+def test_one_sided_p_counts_replicates_on_the_wrong_side():
+    reps = np.concatenate([[1.4], np.linspace(0.9, 1.9, 999)])
+    assert one_sided(reps, above=1.0) == pytest.approx((np.sum(np.linspace(0.9, 1.9, 999) <= 1.0) + 1) / 1000)
+    assert one_sided(reps, below=0.5) == 1.0
+
+
+def test_kendall_tau_per_replicate():
+    a = np.array([[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]])
+    b = np.array([[0.1, 0.3], [0.2, 0.2], [0.3, 0.1]])
+    assert kendall_tau(a, b).tolist() == [1.0, -1.0]
+
+
+def test_only_pairs_significant_under_full_count_as_reversed_or_lost():
+    rng = np.random.default_rng(0)
+    noise = lambda: rng.normal(0, 0.01, 1001)
+    full = {"a": 0.1 + noise(), "b": 0.3 + noise(), "c": 0.31 + noise()}
+    faithful = {"a": 0.4 + noise(), "b": 0.3 + noise(), "c": 0.3 + noise()}
+    flips = significant_flips(full, faithful).set_index("pair")["status"]
+    assert flips.to_dict() == {"a / b": "reversed", "a / c": "reversed"}
+    faithful["a"] = 0.3 + noise()
+    assert significant_flips(full, faithful).set_index("pair")["status"].to_dict() == {"a / b": "lost",
+                                                                                      "a / c": "lost"}
+
+
+def test_outcomes_from_several_folders_keep_their_rows(tmp_path):
+    for i, name in enumerate(("one", "two")):
+        folder = tmp_path / name
+        folder.mkdir()
+        rows, outcomes = outcome_rows(escapes=(3 - i, 1))
+        rows.assign(scorer=name).to_csv(folder / "price.csv", index=False)
+        np.savez(folder / "price_builds.npz", **outcomes)
+    rows, outcomes = load_outcomes([tmp_path / "one", tmp_path / "two"], "price")
+    assert len(rows) == 8 and outcomes["row"].max() == 7
+    two = condition_sums(rows, outcomes, "x", scorer="two")
+    assert two.loc[two["lam"] == 0.1, "escaped"].sum() == 4

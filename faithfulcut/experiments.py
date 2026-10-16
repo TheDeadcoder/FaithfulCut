@@ -156,22 +156,24 @@ def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, 
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"),
                  warmup=cfg.get("warmup", 0.2),
                  signal=change_signal(project, evaluate[1] > 1), adaptive=audits == "adaptive")
+    alarms = np.array([t for t in rep.alarms if t < len(mask)], dtype=int)
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
-           **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False))}
+           **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False)),
+           "alarms": int(mask[alarms].sum()), "alarm_builds": int((mask & (rep.reason == 3)).sum())}
+    of_row, n = suite.build_of_rows(), len(suite.builds)
+    faulty = np.bincount(of_row, weights=labels["operational"], minlength=n) > 0
     if isinstance(cut, OnlineCut):
-        of_row = suite.build_of_rows()
-        faulty = np.bincount(of_row, weights=labels["operational"], minlength=len(suite.builds)) > 0
         updates = rep.audited & faulty & (rep.reason != 1)
         start, finish = suite.builds["start"].to_numpy(), suite.builds["finish"].to_numpy()
         row.update({"updates": len(cut.losses), "pending": max_pending(start[updates], finish[updates]),
                     "lam_min": min(cut.path), "lam_max": max(cut.path)})
     if row["operational_faulty"]:
-        widths = transfer_widths(row["operational_faulty"], row["operational_audited_escape"], pi)
-        row.update({f"width_{k}": v for k, v in widths.items()})
-        of_row, n = suite.build_of_rows(), len(suite.builds)
-        faulty = np.flatnonzero((np.bincount(of_row, weights=labels["operational"], minlength=n) > 0) & mask)
-        caught = np.bincount(of_row, weights=labels["operational"] & rep.selected, minlength=n) > 0
+        caught = row["operational_faulty"] - row["operational_escape"]
+        widths = transfer_widths(caught, row["operational_audited_escape"], pi, row["builds"] - caught)
+        row.update({"escape_ipw": widths.pop("estimate"), **{f"width_{k}": v for k, v in widths.items()}})
+        idx = np.flatnonzero(mask)
+        found = np.bincount(of_row, weights=labels["operational"] & rep.selected, minlength=n) > 0
         coin = rep.audited & (rep.reason != 1)
-        ht = ht_widths(~caught[faulty], coin[faulty], rep.pi[faulty])
+        ht = ht_widths(faulty[idx], found[idx], coin[idx], rep.pi[idx])
         row.update({"escape_ht": ht["estimate"], "width_ht_normal": ht["normal"], "width_ht_worst": ht["worst"]})
     return [row]

@@ -90,7 +90,7 @@ def control_summary(control: pd.DataFrame) -> pd.DataFrame:
     for col in ("width_normal", "width_adaptive", "width_worst", "updates", "pending", "lam_min", "lam_max",
                 "work_with_warmup", "verdict_hours", "full_hours", "decision_seconds", "operational_ttff_hours",
                 "operational_ttff_share", "deconf_masked_rate", "firstfail_cold_base_escape_rate", "audit_rate",
-                "audit_work", "escape_ht", "width_ht_normal", "width_ht_worst"):
+                "audit_work", "escape_ipw", "escape_ht", "width_ht_normal", "width_ht_worst", "alarms", "alarm_builds"):
         if col in df:
             out[col] = g[col].mean()
     return out.reset_index()
@@ -136,6 +136,17 @@ def load_build_outcomes(folder: Path, kind: str) -> tuple[pd.DataFrame, dict[str
     return rows, {k: z[k] for k in z.files}
 
 
+def load_outcomes(folders: list, kind: str) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+    """load_build_outcomes over several result folders, as one table."""
+    frames, parts = [], []
+    for folder in folders:
+        rows, out = load_build_outcomes(Path(folder), kind)
+        parts.append({**out, "row": out["row"] + sum(len(f) for f in frames)})
+        frames.append(rows)
+    merged = {k: np.concatenate([p[k] for p in parts]) for k in parts[0] if k != "labels"}
+    return pd.concat(frames, ignore_index=True), {"labels": parts[0]["labels"], **merged}
+
+
 def condition_sums(rows: pd.DataFrame, outcomes: dict[str, np.ndarray], label: str, **keys) -> pd.DataFrame:
     """For the rows matching `keys`, per lambda and build, sums over seeds of faulty, escaped (base selection),
     escaped without a full run, masked, executed and full test time."""
@@ -166,13 +177,12 @@ def replicate_rates(sums: pd.DataFrame, builds: np.ndarray, weights: np.ndarray,
                     denominator: str = "faulty") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per lambda (sorted) and replicate, the weighted ratio of the two columns and the executed share of test time."""
     lams = np.sort(sums["lam"].unique())
-    rate, work = np.empty((len(lams), len(weights))), np.empty((len(lams), len(weights)))
-    for j, lam in enumerate(lams):
-        g = sums[sums["lam"] == lam].set_index("build").reindex(builds, fill_value=0)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            rate[j] = weights @ g[numerator].to_numpy() / (weights @ g[denominator].to_numpy())
-            work[j] = weights @ g["executed"].to_numpy() / (weights @ g["full"].to_numpy())
-    return lams, rate, work
+    columns = [numerator, denominator, "executed", "full"]
+    wide = sums.pivot(index="build", columns="lam", values=columns)
+    wide = wide.reindex(index=builds, columns=pd.MultiIndex.from_product([columns, lams]), fill_value=0)
+    totals = (weights @ wide.fillna(0).to_numpy(dtype=float)).reshape(len(weights), len(columns), len(lams))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return lams, (totals[:, 0] / totals[:, 1]).T, (totals[:, 2] / totals[:, 3]).T
 
 
 def at_matched_work(rate: np.ndarray, work: np.ndarray, target: float) -> np.ndarray:
@@ -231,6 +241,28 @@ def ranking_flips(means: pd.DataFrame, label: str = "operational", work: float =
     return pd.DataFrame(out)
 
 
+def kendall_tau(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Kendall's tau between two rankings of the same orders (rows), for each replicate (column)."""
+    i, j = np.triu_indices(len(a), 1)
+    return (np.sign(a[i] - a[j]) * np.sign(b[i] - b[j])).mean(axis=0)
+
+
+def significant_flips(full: dict[str, np.ndarray], faithful: dict[str, np.ndarray]) -> pd.DataFrame:
+    """The pairs of orders whose escape difference under FULL has a 95% interval excluding zero, and what it does
+    under FAITHFUL: "reversed" (an interval excluding zero the other way), "lost" (one including zero) or "kept"."""
+    names, rows = sorted(full), []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            before, after = interval(full[a] - full[b]), interval(faithful[a] - faithful[b])
+            sign = 1 if before["low"] > 0 else -1 if before["high"] < 0 else 0
+            if not sign:
+                continue
+            now = 1 if after["low"] > 0 else -1 if after["high"] < 0 else 0
+            rows.append({"pair": f"{a} / {b}", "full": before["estimate"], "faithful": after["estimate"],
+                         "status": "kept" if now == sign else "lost" if now == 0 else "reversed"})
+    return pd.DataFrame(rows, columns=["pair", "full", "faithful", "status"])
+
+
 def project_builds(project: str, evaluate: tuple[float, float], replicates: int = 1000,
                    seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """The project's evaluated builds and pull-request cluster bootstrap weights over them."""
@@ -261,3 +293,11 @@ def interval(replicates: np.ndarray) -> dict[str, float]:
     boot = replicates[1:][~np.isnan(replicates[1:])]
     low, high = np.percentile(boot, [2.5, 97.5]) if len(boot) else (np.nan, np.nan)
     return {"estimate": float(replicates[0]), "low": float(low), "high": float(high)}
+
+
+def one_sided(replicates: np.ndarray, above: float | None = None, below: float | None = None) -> float:
+    """Bootstrap p-value that the statistic is above `above` (or below `below`): the share of replicates on the other
+    side, with one added to both counts."""
+    boot = replicates[1:][~np.isnan(replicates[1:])]
+    other = (boot <= above).sum() if above is not None else (boot >= below).sum()
+    return float(min(1.0, (other + 1) / (len(boot) + 1)))
