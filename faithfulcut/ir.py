@@ -84,8 +84,9 @@ def parse_diff(text: str) -> dict[str, tuple[str | None, str, str]]:
 
 
 class _Repo:
-    def __init__(self, project: str, trees: int = 64):
+    def __init__(self, project: str, trees: int = 64, keep=is_test_source):
         self.project = project
+        self.keep = keep
         self.git = repo_dir(project)
         self.batch = subprocess.Popen(["git", "--git-dir", str(self.git), "cat-file", "--batch"],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -102,16 +103,18 @@ class _Repo:
         c = Counter(self.terms.setdefault(t, len(self.terms)) for t in tokens(text))
         return np.fromiter(c.keys(), np.int64, len(c)), np.fromiter(c.values(), np.float64, len(c))
 
+    def text(self, oid: str) -> str | None:
+        self.batch.stdin.write(f"{oid}\n".encode())
+        self.batch.stdin.flush()
+        header = self.batch.stdout.readline().split()
+        if len(header) < 3:
+            return None
+        return self.batch.stdout.read(int(header[2]) + 1)[:-1].decode("utf-8", errors="ignore")
+
     def blob(self, oid: str) -> tuple[np.ndarray, np.ndarray]:
         if oid not in self.blobs:
-            self.batch.stdin.write(f"{oid}\n".encode())
-            self.batch.stdin.flush()
-            header = self.batch.stdout.readline().split()
-            if len(header) < 3:
-                self.blobs[oid] = (np.empty(0, np.int64), np.empty(0))
-            else:
-                content = self.batch.stdout.read(int(header[2]) + 1)[:-1]
-                self.blobs[oid] = self.counts(content.decode("utf-8", errors="ignore"))
+            content = self.text(oid)
+            self.blobs[oid] = (np.empty(0, np.int64), np.empty(0)) if content is None else self.counts(content)
         return self.blobs[oid]
 
     def tree(self, sha: str) -> dict[str, str] | None:
@@ -126,7 +129,7 @@ class _Repo:
                         continue
                     meta, path = entry.split("\t", 1)
                     mode, kind, oid = meta.split()
-                    if kind == "blob" and is_test_source(path):
+                    if kind == "blob" and self.keep(path):
                         files[path] = oid
             self.trees[sha] = files
             if len(self.trees) > self.max_trees:

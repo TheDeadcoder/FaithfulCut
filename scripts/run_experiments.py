@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from faithfulcut.experiments import control_task, price_task
+from faithfulcut.experiments import available, control_task, price_task
 
 
 def price_jobs(cfg: dict) -> list:
     p, evaluate = cfg["price"], tuple(cfg["evaluate"])
     return [(price_task, (project, scorer, regime, pi, seed, p["lambdas"], evaluate, cfg.get("retire_after")))
-            for project in cfg["projects"] for scorer in p["scorers"] for regime, pi in p["conditions"]
-            for seed in range(p["seeds"])]
+            for project in cfg["projects"] for scorer in p["scorers"] if available(project, scorer)
+            for regime, pi in p["conditions"] for seed in range(p["seeds"])]
 
 
 def control_jobs(cfg: dict) -> list:
@@ -23,8 +23,8 @@ def control_jobs(cfg: dict) -> list:
     runs += [("meta", 0.0, c["meta_pi"])]
     c = {**c, "retire_after": cfg.get("retire_after")}
     return [(control_task, (project, scorer, kind, alpha, pi, seed, c, evaluate))
-            for project in cfg["projects"] for scorer in c["scorers"] for kind, alpha, pi in runs
-            for seed in range(c["seeds"])]
+            for project in cfg["projects"] for scorer in c["scorers"] if available(project, scorer)
+            for kind, alpha, pi in runs for seed in range(c["seeds"])]
 
 
 def call(job):

@@ -1,4 +1,5 @@
 import heapq
+from collections import deque
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Callable
@@ -20,7 +21,7 @@ def tie_breaks(seed: int, t: int, n_classes: int) -> np.ndarray:
 
 
 class History:
-    def __init__(self, n_classes: int):
+    def __init__(self, n_classes: int, recent: int = 100):
         self.known = np.zeros(n_classes, dtype=bool)
         self.retired = np.zeros(n_classes, dtype=bool)
         self.absent = np.zeros(n_classes, dtype=np.int64)
@@ -32,12 +33,17 @@ class History:
         self.last_duration = np.zeros(n_classes)
         self.cofails = {}
         self.weighted_cofails = {}
+        # the latest observed builds as (build, classes, failed, weights, sequence number); `derived` caches
+        # features scorers build on them
+        self.recent = deque(maxlen=recent)
+        self.observed = 0
+        self.derived = {}
 
     def catalog(self) -> np.ndarray:
         return np.flatnonzero(self.known & ~self.retired)
 
     def observe(self, cls: np.ndarray, failed: np.ndarray, duration: np.ndarray, weight: np.ndarray,
-                files: np.ndarray):
+                files: np.ndarray, build: int = -1):
         self.known[cls] = True
         self.retired[cls] = False
         self.absent[cls] = 0
@@ -47,6 +53,8 @@ class History:
         self.weighted_fails[cls] += weight * failed
         self.since_fail[cls] = np.where(failed, 1, self.since_fail[cls] + 1)
         self.last_duration[cls] = duration
+        self.recent.append((build, cls, failed, weight, self.observed))
+        self.observed += 1
         failing = list(zip(cls[failed].tolist(), weight[failed].tolist()))
         for f in files.tolist():
             counts = self.cofails.setdefault(f, {})
@@ -104,7 +112,7 @@ def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.
     else:
         weight = np.ones(int(seen.sum()))
     history.observe(suite.cls[rows][seen], suite.failed[rows][seen], suite.duration[rows][seen], weight,
-                    suite.changed(t))
+                    suite.changed(t), t)
     if retire_after is not None:
         history.miss(absent, retire_after)
 
