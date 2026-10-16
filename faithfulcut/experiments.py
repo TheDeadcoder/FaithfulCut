@@ -154,6 +154,7 @@ def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, 
     cut, feedback, monitor, cap = make_controller(base, alpha, cfg, project, scorer)
     rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels["operational"],
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"),
+                 warmup=cfg.get("warmup", 0.2),
                  signal=change_signal(project, evaluate[1] > 1), adaptive=audits == "adaptive")
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
            **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False))}
