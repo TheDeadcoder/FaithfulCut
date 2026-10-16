@@ -7,7 +7,7 @@ from faithfulcut.control import FixedCut, MetaCut, Monitor, OnlineCut, SplitCut,
 from faithfulcut.ir import load_ir
 from faithfulcut.labels import load_operational, transfer
 from faithfulcut.replay import replay
-from faithfulcut.scorers import history_scorers, ir_scorers
+from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers
 from faithfulcut.suite import Suite, load_suite
 
 
@@ -20,6 +20,7 @@ def setup(project: str, seed: int, evaluate: tuple[float, float]):
     labels = {"operational": load_operational(full, seed)[:rows]}
     labels.update({k: v[:rows] for k, v in transfer(full).items()})
     scorers = {**history_scorers(suite), **ir_scorers(suite, load_ir(full, "seen"))}
+    scorers.update(hybrid_scorers(scorers["LatestFail+CC"], scorers["TF-IDF+CC"]))
     if project in dante.PROJECTS:
         relevance = cache(lambda: dante.load_relevance(full))
         scorers.update(dante.dante_scorers(suite, relevance, dante.stage_counts(full)))

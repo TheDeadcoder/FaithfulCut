@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from synthetic import make_suite, perturb, random_suite
 
-from faithfulcut.replay import replay
-from faithfulcut.scorers import history_scorers
+from faithfulcut.replay import History, replay
+from faithfulcut.scorers import depth_split, history_scorers, hybrid_scorers, ir_scorers, rank_fusion
 
 
 def sequential(failing, n_classes=3, changed=None, durations=None):
@@ -53,4 +53,61 @@ def test_faithful_history_scorers_ignore_rows_they_never_ran(name):
     hidden = ~a.executed(s)
     b_suite = perturb(s, hidden)
     b = replay(b_suite, "faithful", history_scorers(b_suite)[name], lam=0.3, pi=0.2, seed=3)
+    assert np.array_equal(a.selected, b.selected) and np.array_equal(a.depth, b.depth)
+
+
+def random_history(seed, n=60):
+    rng = np.random.default_rng(seed)
+    h = History(n)
+    h.known[:] = rng.random(n) < 0.8
+    h.last_duration[:] = rng.lognormal(0, 1, n)
+    return h, rng.random(n), rng.random(n)
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_depth_split_runs_the_union_of_both_prefixes(seed):
+    h, a, b = random_history(seed)
+    split = depth_split(lambda h, t: a, lambda h, t: b)(h, 0)
+    catalog = h.catalog()
+    cost = h.last_duration[catalog]
+    depth = {}
+    for name, values in (("a", a), ("b", b)):
+        order = np.argsort(values[catalog], kind="stable")
+        depth[name] = np.empty(len(catalog))
+        depth[name][order] = np.cumsum(cost[order])
+    for d in np.quantile(depth["a"], [0.1, 0.3, 0.6]):
+        union = set(catalog[(depth["a"] <= d) | (depth["b"] <= d)])
+        assert set(catalog[split[catalog] <= d]) == union
+    assert np.isinf(split[~h.known]).all()
+
+
+def test_rank_fusion_favours_classes_high_in_both_orders():
+    h, a, b = random_history(0)
+    catalog = h.catalog()
+    a[catalog[0]], b[catalog[0]] = -1.0, -1.0
+    fused = rank_fusion(lambda h, t: a, lambda h, t: b)(h, 0)
+    assert catalog[np.argmin(fused[catalog])] == catalog[0]
+    assert np.allclose(fused, rank_fusion(lambda h, t: b, lambda h, t: a)(h, 0))
+
+
+def synthetic_ir(suite, seed=0):
+    rng = np.random.default_rng(seed)
+    cls = [np.flatnonzero(rng.random(len(suite.names)) < 0.4) for _ in range(len(suite.builds))]
+    return {"offsets": np.cumsum([0] + [len(c) for c in cls]), "cls": np.concatenate(cls),
+            "score": rng.random(sum(len(c) for c in cls))}
+
+
+@pytest.mark.parametrize("name", ["Hybrid", "Hybrid-RRF"])
+def test_faithful_hybrids_ignore_rows_they_never_ran(name):
+    s = random_suite()
+    ir = synthetic_ir(s)
+
+    def hybrid(suite):
+        return hybrid_scorers(history_scorers(suite)["LatestFail+CC"], ir_scorers(suite, ir)["TF-IDF+CC"])[name]
+
+    a = replay(s, "faithful", hybrid(s), lam=0.3, pi=0.2, seed=3)
+    hidden = ~a.executed(s)
+    assert hidden.any()
+    b_suite = perturb(s, hidden)
+    b = replay(b_suite, "faithful", hybrid(b_suite), lam=0.3, pi=0.2, seed=3)
     assert np.array_equal(a.selected, b.selected) and np.array_equal(a.depth, b.depth)

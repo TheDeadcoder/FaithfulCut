@@ -46,3 +46,44 @@ def ir_scorers(suite: Suite, ir: dict[str, np.ndarray]) -> dict[str, Scorer]:
         return 1 / (scores + EPS)
 
     return {"TF-IDF": tfidf, "TF-IDF+CC": lambda h, t: tfidf(h, t) * (h.last_duration + EPS)}
+
+
+def depth_split(first: Scorer, second: Scorer) -> Scorer:
+    """Each class's smaller cumulative predicted cost in the two orders, so a cut at depth d runs the union of both
+    orders' prefixes up to d: the budget is shared equally between them."""
+
+    def score(h: History, t: int) -> np.ndarray:
+        catalog = h.catalog()
+        cost = h.last_duration[catalog]
+        best = np.full(len(catalog), np.inf)
+        for order in (np.argsort(s(h, t)[catalog], kind="stable") for s in (first, second)):
+            depth = np.empty(len(catalog))
+            depth[order] = np.cumsum(cost[order])
+            best = np.minimum(best, depth)
+        out = np.full(len(h.known), np.inf)
+        out[catalog] = best
+        return out
+
+    return score
+
+
+def rank_fusion(first: Scorer, second: Scorer, k: int = 60) -> Scorer:
+    """Reciprocal rank fusion of two orders."""
+
+    def score(h: History, t: int) -> np.ndarray:
+        catalog = h.catalog()
+        fused = np.zeros(len(catalog))
+        for order in (np.argsort(s(h, t)[catalog], kind="stable") for s in (first, second)):
+            ranks = np.empty(len(catalog))
+            ranks[order] = np.arange(1, len(catalog) + 1)
+            fused += 1 / (k + ranks)
+        out = np.zeros(len(h.known))
+        out[catalog] = -fused
+        return out
+
+    return score
+
+
+def hybrid_scorers(history: Scorer, content: Scorer) -> dict[str, Scorer]:
+    """History and change relevance combined: an equal budget split, and reciprocal rank fusion."""
+    return {"Hybrid": depth_split(history, content), "Hybrid-RRF": rank_fusion(history, content)}
