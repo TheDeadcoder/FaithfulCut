@@ -5,8 +5,10 @@ import pandas as pd
 import pytest
 from synthetic import make_suite, random_suite
 
-from faithfulcut.analysis import at_work, break_even_hours, energy
-from faithfulcut.experiments import summarize
+from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cluster_weights, compare,
+                                  condition_sums, energy, holm, replicate_rates, tuned_budgets)
+from faithfulcut.control import FixedCut
+from faithfulcut.experiments import make_controller, summarize
 from faithfulcut.labels import cold_rows
 from faithfulcut.llm import risk_levels, timed_state
 from faithfulcut.metrics import first_failure_time
@@ -91,3 +93,64 @@ def test_energy_and_break_even_scale_linearly():
     assert (e["kwh_low"], e["kwh_high"]) == pytest.approx((0.1, 3.0))
     assert (e["kg_co2e_low"], e["kg_co2e_high"]) == pytest.approx((0.002, 2.1))
     assert break_even_hours(36.0, 0.5) == pytest.approx(0.02) and break_even_hours(1.0, 1.0) == np.inf
+
+
+def test_per_build_flags_record_faulty_caught_masked_and_full_runs():
+    s = two_builds([0, 1], [5.0, 1.0])
+    label = np.array([False, False, True, False])
+    rep = replay(s, "full", qtf, lam=0.2, warmup=0.0)
+    builds = summarize(s, rep, {"x": label, "all": s.failed}, np.array([False, True]), per_build=True)["_builds"]
+    assert builds["labels"] == ["x", "all"] and builds["build"].tolist() == [1]
+    flags = int(builds["flags"][0])
+    assert [(flags >> b) & 1 for b in range(6)] == [1, 0, 1, 1, 1, 0] and not flags >> 15
+    assert builds["executed"].tolist() == [1.0] and builds["full"].tolist() == [6.0]
+
+
+def outcome_rows(escapes, faulty=4, lams=(0.1, 0.3), works=(0.1, 0.3)):
+    rows, parts = [], []
+    for seed in range(2):
+        for lam, work, n_escaped in zip(lams, works, escapes):
+            flags = np.zeros(faulty + 1, np.uint16)
+            flags[:faulty] = 1 | (np.arange(faulty) >= n_escaped).astype(np.uint16) << 1
+            parts.append({"row": np.full(faulty + 1, len(rows)), "build": np.arange(faulty + 1),
+                          "executed": np.full(faulty + 1, work, np.float32), "full": np.ones(faulty + 1, np.float32),
+                          "flags": flags})
+            rows.append({"scorer": "s", "seed": seed, "lam": lam})
+    outcomes = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
+    return pd.DataFrame(rows), {**outcomes, "labels": np.array(["x"])}
+
+
+def test_bootstrap_rates_interpolate_at_matched_work_for_every_replicate():
+    rows, outcomes = outcome_rows(escapes=(3, 1))
+    sums = condition_sums(rows, outcomes, "x", scorer="s")
+    assert sums["faulty"].sum() == 16 and sums.loc[sums["lam"] == 0.1, "escaped"].sum() == 6
+    weights = cluster_weights(np.arange(5), replicates=200, seed=1)
+    assert np.all(weights[0] == 1) and np.all(weights.sum(axis=1) == 5)
+    lams, rate, work = replicate_rates(sums, np.arange(5), weights)
+    assert rate[:, 0] == pytest.approx([0.75, 0.25]) and work[:, 0] == pytest.approx([0.1, 0.3])
+    assert at_matched_work(rate, work, 0.2)[0] == pytest.approx(0.5)
+
+
+def test_compare_and_holm():
+    a = np.random.default_rng(0).normal(0.3, 0.01, 1001)
+    same = compare(a, a)
+    assert same["difference"] == 0 and same["p"] == 1.0
+    apart = compare(a, a - 0.1)
+    assert apart["low"] > 0 and apart["p"] < 0.01
+    assert holm(np.array([0.01, 0.04, 0.03])) == pytest.approx([0.03, 0.06, 0.06])
+
+
+def test_tuned_budget_is_the_smallest_lambda_meeting_alpha():
+    rows = []
+    for seed in range(2):
+        for lam, escaped in ((0.1, 5), (0.2, 3), (0.3, 1), (0.4, 2)):
+            row = {"project": "p", "scorer": "s", "regime": "faithful", "pi": 0.1, "seed": seed, "lam": lam}
+            for label in ("operational", "deconf", "firstfail"):
+                row.update({f"{label}_faulty": 10, f"{label}_escape": escaped, f"{label}_executed_escape": escaped,
+                            f"{label}_audited": 0, f"{label}_audited_escape": 0, f"{label}_rows": 10,
+                            f"{label}_rows_selected": 10 - escaped})
+            rows.append(row)
+    tuned = tuned_budgets(pd.DataFrame(rows), [0.4, 0.2, 0.05]).set_index("alpha")["lam"]
+    assert tuned[0.4] == pytest.approx(0.15) and tuned[0.2] == pytest.approx(0.25) and tuned[0.05] == 1.0
+    cut = make_controller("tuned", 0.2, {"tuned": {("p", "s", 0.2): 0.25}, "cap": 0.8}, "p", "s")[0]
+    assert isinstance(cut, FixedCut) and cut.decide(0, False) == 0.25
