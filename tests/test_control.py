@@ -1,13 +1,13 @@
 import numpy as np
 import pytest
 from scipy import stats
-from synthetic import make_suite, random_suite
+from synthetic import make_suite, perturb, random_suite
 
 from faithfulcut.control import (
-    AUDIT, WARMUP, FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, crc_quantile, max_pending, online_slack,
-    pac_quantile, transfer_widths,
+    AUDIT, WARMUP, FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, crc_quantile, ht_widths, max_pending,
+    online_slack, pac_quantile, transfer_widths,
 )
-from faithfulcut.replay import audit_coins, replay
+from faithfulcut.replay import AUDIT_FLOOR, audit_coins, replay
 from faithfulcut.scorers import qtf
 
 
@@ -132,3 +132,52 @@ def test_fixed_cut_ignores_feedback():
     cut = FixedCut(0.3)
     feed(cut, [0.9, 0.9, 0.9])
     assert cut.decide(0, False) == 0.3
+
+
+def test_unequal_probability_widths_match_the_uniform_ones_when_pi_is_constant():
+    rng = np.random.default_rng(0)
+    escaped, audited = rng.random(400) < 0.1, rng.random(400) < 0.25
+    ht = ht_widths(escaped, audited, np.full(400, 0.25))
+    uniform = transfer_widths(400, int((escaped & audited).sum()), 0.25)
+    assert ht["normal"] == pytest.approx(uniform["normal"]) and ht["worst"] == pytest.approx(uniform["worst"])
+    assert ht["estimate"] == pytest.approx((escaped & audited).sum() / 0.25 / 400)
+
+
+def test_online_step_scales_with_its_weight():
+    a, b = OnlineCut(0.1, 0.2, start=0.5), OnlineCut(0.1, 0.2, start=0.5)
+    a.observe(0, np.array([0.9]), False, AUDIT)
+    b.observe(0, np.array([0.9]), False, AUDIT, weight=2.0)
+    assert b.value - 0.5 == pytest.approx(2 * (a.value - 0.5))
+
+
+def change_share(seed=0, n_builds=200, n_classes=30):
+    relevance = np.random.default_rng(seed).random((n_builds, n_classes)) ** 3
+
+    def signal(t, depth_by_class, lam):
+        r = relevance[t]
+        return float(r[depth_by_class > lam].sum() / r.sum())
+
+    return signal
+
+
+def test_adaptive_audit_probability_follows_the_signal_over_its_running_mean():
+    s = random_suite(n_builds=200)
+    rep = replay(s, "faithful", qtf, lam=0.3, pi=0.2, seed=3, signal=change_share(), adaptive=True)
+    warm = s.builds["position"].to_numpy() < 0.2
+    total = count = 0.0
+    for t in np.flatnonzero(~warm):
+        expected = 0.2 if not count else min(max(0.2 * rep.signal[t] * count / total, AUDIT_FLOOR), 1.0)
+        assert rep.pi[t] == pytest.approx(expected)
+        total, count = total + rep.signal[t], count + 1
+    coins = audit_coins(3, len(s.builds))
+    assert np.array_equal(rep.audited[~warm], coins[~warm] < rep.pi[~warm])
+    assert rep.audited[~warm & (coins < AUDIT_FLOOR)].all()
+    assert 0.12 < rep.pi[~warm].mean() < 0.3
+
+
+def test_adaptive_audits_ignore_rows_never_run():
+    s = random_suite(n_builds=200)
+    a = replay(s, "faithful", qtf, lam=0.3, pi=0.2, seed=3, signal=change_share(), adaptive=True)
+    b = replay(perturb(s, ~a.executed(s)), "faithful", qtf, lam=0.3, pi=0.2, seed=3, signal=change_share(),
+               adaptive=True)
+    assert np.array_equal(a.audited, b.audited) and np.array_equal(a.selected, b.selected)

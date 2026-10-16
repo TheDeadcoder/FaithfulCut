@@ -3,7 +3,8 @@ from functools import cache, lru_cache
 import numpy as np
 
 from faithfulcut import dante
-from faithfulcut.control import FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, max_pending, transfer_widths
+from faithfulcut.control import (FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, ht_widths, max_pending,
+                                 transfer_widths)
 from faithfulcut.ir import load_ir
 from faithfulcut.metrics import first_failure_time
 from faithfulcut.labels import cold_rows, load_operational, transfer
@@ -35,14 +36,29 @@ def available(project: str, scorer: str) -> bool:
 
 
 FULL_RUN_BIT = 15
+FLAG_SHARE = 0.5
+
+
+@lru_cache(maxsize=2)
+def change_signal(project: str):
+    """Share of the build's TF-IDF relevance mass that falls on classes outside its cut."""
+    ir = load_ir(load_suite(project), "seen")
+
+    def signal(t: int, depth_by_class: np.ndarray, lam: float) -> float:
+        part = slice(ir["offsets"][t], ir["offsets"][t + 1])
+        score = ir["score"][part]
+        total = score.sum()
+        return float(score[depth_by_class[ir["cls"][part]] > lam].sum() / total) if total > 0 else 0.0
+
+    return signal
 
 
 def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray, timing: bool = False,
               per_build: bool = False) -> dict:
     """Test work, feedback time and selector time and, per label, faulty builds, escapes, escapes masked by another
     selected failure and selected failing rows over the evaluated builds; `timing` adds the time to first failure.
-    `per_build` adds, under "_builds", each evaluated build's test time and flags: for the i-th label, bits 3i, 3i+1
-    and 3i+2 mark faulty, caught by the selection and masked; bit FULL_RUN_BIT marks a full run."""
+    `per_build` adds, under "_builds", each evaluated build's test time, change signal and flags: for the i-th label,
+    bits 3i, 3i+1 and 3i+2 mark faulty, caught by the selection and masked; bit FULL_RUN_BIT marks a full run."""
     of_row = suite.build_of_rows()
     n = len(suite.builds)
     full_run = rep.audited | rep.forced
@@ -58,7 +74,13 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
         "verdict_hours": rep.executed_cost[evaluate].mean() / 3600,
         "full_hours": rep.full_cost[evaluate].mean() / 3600,
         "decision_seconds": rep.seconds[evaluate].mean(),
+        "audit_rate": coin[evaluate].mean(),
+        "audit_work": (rep.full_cost - rep.base_cost)[evaluate & coin & ~rep.forced].sum()
+        / rep.full_cost[evaluate].sum(),
     }
+    flagged = rep.signal >= FLAG_SHARE
+    if not np.isnan(rep.signal[evaluate]).all():
+        out["flagged"] = int((flagged & evaluate).sum())
     flags = (full_run.astype(np.uint16) << FULL_RUN_BIT)
     for i, (name, label) in enumerate(labels.items()):
         faulty = (np.bincount(of_row, weights=label, minlength=n) > 0) & evaluate
@@ -73,6 +95,7 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
             f"{name}_escape": int((faulty & ~caught).sum()),
             f"{name}_executed_escape": int((faulty & ~caught & ~full_run).sum()),
             f"{name}_masked": int(masked.sum()),
+            f"{name}_flagged_escape": int((faulty & ~caught & flagged).sum()),
             f"{name}_audited": int((faulty & coin).sum()),
             f"{name}_audited_escape": int((faulty & coin & ~caught).sum()),
             f"{name}_rows": int(rows.sum()),
@@ -87,7 +110,8 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
         idx = np.flatnonzero(evaluate)
         out["_builds"] = {"labels": list(labels), "build": idx.astype(np.int32),
                           "executed": rep.executed_cost[idx].astype(np.float32),
-                          "full": rep.full_cost[idx].astype(np.float32), "flags": flags[idx]}
+                          "full": rep.full_cost[idx].astype(np.float32), "flags": flags[idx],
+                          "signal": rep.signal[idx].astype(np.float32)}
     return out
 
 
@@ -124,10 +148,13 @@ def make_controller(kind: str, alpha: float, cfg: dict, project: str = "", score
 
 def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, seed: int, cfg: dict,
                  evaluate: tuple[float, float]) -> list[dict]:
+    """One controller replay; a kind ending in "+adaptive" audits by the change signal instead of uniformly."""
     suite, labels, scorers, mask = setup(project, seed, evaluate)
-    cut, feedback, monitor, cap = make_controller(kind, alpha, cfg, project, scorer)
+    base, _, audits = kind.partition("+")
+    cut, feedback, monitor, cap = make_controller(base, alpha, cfg, project, scorer)
     rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels["operational"],
-                 feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"))
+                 feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"),
+                 signal=change_signal(project), adaptive=audits == "adaptive")
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
            **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False))}
     if isinstance(cut, OnlineCut):
@@ -140,4 +167,10 @@ def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, 
     if row["operational_faulty"]:
         widths = transfer_widths(row["operational_faulty"], row["operational_audited_escape"], pi)
         row.update({f"width_{k}": v for k, v in widths.items()})
+        of_row, n = suite.build_of_rows(), len(suite.builds)
+        faulty = np.flatnonzero((np.bincount(of_row, weights=labels["operational"], minlength=n) > 0) & mask)
+        caught = np.bincount(of_row, weights=labels["operational"] & rep.selected, minlength=n) > 0
+        coin = rep.audited & (rep.reason != 1)
+        ht = ht_widths(~caught[faulty], coin[faulty], rep.pi[faulty])
+        row.update({"escape_ht": ht["estimate"], "width_ht_normal": ht["normal"], "width_ht_worst": ht["worst"]})
     return [row]

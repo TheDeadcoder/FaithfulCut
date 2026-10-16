@@ -10,6 +10,7 @@ from faithfulcut.control import AUDIT, ORACLE, WARMUP, FixedCut, Monitor
 from faithfulcut.suite import Suite
 
 REGIMES = ("full", "timed", "faithful")
+AUDIT_FLOOR = 0.05
 
 
 def audit_coins(seed: int, n_builds: int) -> np.ndarray:
@@ -98,6 +99,9 @@ class Replay:
     # why a build ran in full regardless of its cut: 0 it did not, 1 warm-up, 2 size cap, 3 alarm
     reason: np.ndarray
     cut: object
+    # each build's audit probability, and the share of change relevance outside its cut (NaN without a signal)
+    pi: np.ndarray
+    signal: np.ndarray
 
     def executed(self, suite: Suite) -> np.ndarray:
         return self.selected | np.repeat(self.audited | self.forced, np.diff(suite.offsets))
@@ -119,35 +123,46 @@ def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.
 
 def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed: int = 0,
            warmup: float = 0.2, retire_after: int | None = None, label: np.ndarray | None = None, feedback: str = "audits",
-           cap: float = np.inf, monitor: Monitor | None = None, hold: int = 20) -> Replay:
+           cap: float = np.inf, monitor: Monitor | None = None, hold: int = 20,
+           signal: Callable[[int, np.ndarray, float], float] | None = None, adaptive: bool = False) -> Replay:
     """Replay the suite under one information regime.
 
     `lam` is a fixed cut or a controller; with a per-row `label`, every faulty build seen in full (warm-up or
     coin audit, or every faulty build when feedback is "all") reaches the controller when it finishes.
+
+    `signal(t, depth_by_class, lam)` gives the share of the build's change relevance outside its cut. With
+    `adaptive`, the build's audit probability is pi times that share over its running mean after the warm-up, kept
+    within [AUDIT_FLOOR, 1]; audit-only observations then weigh 1 / pi_t, controller steps pi / pi_t, and the monitor
+    reads only the audits below AUDIT_FLOOR, a uniform sample shared by every policy.
     """
     if regime not in REGIMES:
         raise ValueError(f"unknown regime {regime}")
+    if adaptive and signal is None:
+        raise ValueError("adaptive audits need a signal")
     cut = lam if hasattr(lam, "decide") else FixedCut(lam)
     n_builds, n_classes, n_rows = len(suite.builds), len(suite.names), len(suite.cls)
     start = suite.builds["start"].to_numpy()
     finish = suite.builds["finish"].to_numpy()
     warm = suite.builds["position"].to_numpy() < warmup
-    audited = audit_coins(seed, n_builds) < pi
+    coins = audit_coins(seed, n_builds)
+    audited = coins < pi
     history = History(n_classes)
     rep = Replay(
         lam=np.zeros(n_builds), audited=audited, forced=np.zeros(n_builds, dtype=bool),
         known=np.zeros(n_builds, dtype=np.int64), full_cost=np.zeros(n_builds), base_cost=np.zeros(n_builds),
         executed_cost=np.zeros(n_builds), seconds=np.zeros(n_builds),
         depth=np.zeros(n_rows, dtype=np.float32), selected=np.zeros(n_rows, dtype=bool), history=history,
-        reason=np.zeros(n_builds, dtype=np.int8), cut=cut,
+        reason=np.zeros(n_builds, dtype=np.int8), cut=cut, pi=np.full(n_builds, pi),
+        signal=np.full(n_builds, np.nan),
     )
     forced = rep.forced
     pending, notes, alarm_until = [], {}, -1
+    signal_sum = signal_count = 0.0
 
     def deliver(u: int, now: int):
         nonlocal alarm_until
         _feedback(history, suite, regime, u, *notes.pop(u), audited[u] or forced[u], audited[u] and not forced[u],
-                  pi, retire_after)
+                  rep.pi[u], retire_after)
         if label is None:
             return
         rows = suite.rows(u)
@@ -156,8 +171,10 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
         if kind is None or not labeled.any():
             return
         caught = bool((rep.selected[rows] & labeled).any())
-        cut.observe(u, rep.depth[rows][labeled].astype(float), caught, kind)
-        if monitor is not None and kind == AUDIT and monitor.update(0.0 if caught else 1.0):
+        weight = pi / rep.pi[u] if adaptive and kind == AUDIT else 1.0
+        cut.observe(u, rep.depth[rows][labeled].astype(float), caught, kind, weight)
+        sampled = not adaptive or coins[u] < AUDIT_FLOOR
+        if monitor is not None and kind == AUDIT and sampled and monitor.update(0.0 if caught else 1.0):
             alarm_until = max(alarm_until, now + hold)
 
     for t in range(n_builds):
@@ -174,7 +191,14 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
         depth_by_class[order] = cumulative / cumulative[-1] if len(order) and cumulative[-1] > 0 else 0.0
         depth = depth_by_class[cls]
         selected = depth <= lam_t
+        if signal is not None:
+            rep.signal[t] = signal(t, depth_by_class, lam_t)
         rep.seconds[t] = perf_counter() - clock
+        if adaptive and not warm[t]:
+            if signal_count and signal_sum > 0:
+                rep.pi[t] = min(max(pi * rep.signal[t] * signal_count / signal_sum, AUDIT_FLOOR), 1.0)
+            audited[t] = coins[t] < rep.pi[t]
+            signal_sum, signal_count = signal_sum + rep.signal[t], signal_count + 1
 
         rep.reason[t] = 1 if warm[t] else 2 if lam_t >= cap else 3 if t < alarm_until else 0
         forced[t] = rep.reason[t] > 0

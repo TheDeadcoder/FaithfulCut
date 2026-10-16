@@ -36,14 +36,15 @@ class FixedCut:
     def decide(self, t: int, warm: bool) -> float:
         return self.value
 
-    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str):
+    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str, weight: float = 1.0):
         pass
 
 
 class OnlineCut:
-    """lambda += eta * (loss - alpha) on each audited faulty build, no projection and no reset.
+    """lambda += eta * weight * (loss - alpha) on each audited faulty build, no projection and no reset.
 
-    It starts, once the warm-up ends, from the conformal quantile of the warm-up's first-failure depths.
+    It starts, once the warm-up ends, from the conformal quantile of the warm-up's first-failure depths. The weight
+    is 1 under uniform audits and pi / pi_t under adaptive ones.
     """
 
     def __init__(self, alpha: float, eta: float, start: float | None = None):
@@ -56,7 +57,7 @@ class OnlineCut:
             self.path.append(self.value)
         return 1.0 if self.value is None else self.value
 
-    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str):
+    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str, weight: float = 1.0):
         if kind == WARMUP:
             if self.value is None:
                 self.warm.append(depths.min())
@@ -65,7 +66,7 @@ class OnlineCut:
             return
         loss = 0.0 if caught else 1.0
         self.losses.append(loss)
-        self.value += self.eta * (loss - self.alpha)
+        self.value += self.eta * weight * (loss - self.alpha)
         self.path.append(self.value)
 
 
@@ -80,7 +81,7 @@ class SplitCut:
     def decide(self, t: int, warm: bool) -> float:
         return self.value
 
-    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str):
+    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str, weight: float = 1.0):
         self.first.append(depths.min())
         if self.delta is None:
             self.value = crc_quantile(self.first, self.alpha)
@@ -112,7 +113,7 @@ class MetaCut:
             self.recalibrate()
         return self.value
 
-    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str):
+    def observe(self, t: int, depths: np.ndarray, caught: bool, kind: str, weight: float = 1.0):
         self.seen.append(depths)
         if kind != WARMUP:
             self.since += 1
@@ -180,3 +181,18 @@ def transfer_widths(n_faulty: int, audited_misses: int, pi: float, delta: float 
         "adaptive": adaptive,
         "worst": freedman(n_faulty) / (pi * n_faulty),
     }
+
+
+def ht_widths(escaped: np.ndarray, audited: np.ndarray, pi: np.ndarray, delta: float = 0.05) -> dict[str, float]:
+    """Half-widths for the full-stream escape rate over faulty builds around the Horvitz-Thompson estimate, when each
+    faulty build is audited with its known probability pi: "normal" from the estimated variance, "worst" from
+    Freedman's inequality with every faulty build an escape. With one pi for all builds they equal the normal and
+    worst widths of transfer_widths."""
+    n = len(pi)
+    log_term = math.log(2 / delta)
+    seen = escaped & audited
+    variance = ((1 - pi[seen]) / pi[seen] ** 2).sum()
+    bound = max(1.0, 1 / pi.min() - 1)
+    worst = math.sqrt(2 * ((1 - pi) / pi).sum() * log_term) + 2 * bound * log_term / 3
+    normal = stats.norm.ppf(1 - delta / 2) * math.sqrt(variance)
+    return {"estimate": float((1 / pi[seen]).sum() / n), "normal": float(normal / n), "worst": float(worst / n)}
