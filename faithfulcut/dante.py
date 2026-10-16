@@ -305,13 +305,22 @@ def _relevance_path(project: str) -> Path:
 
 def load_relevance(suite: Suite) -> dict[str, np.ndarray]:
     """DANTE relevance of every class seen before each build starts, cached per project."""
-    path = _relevance_path(suite.project)
+    path = _relevance_path(suite.key)
     if path.exists():
         return dict(np.load(path))
+    base = _relevance_path(suite.project)
+    base = dict(np.load(base)) if suite.key != suite.project and base.exists() else None
     rel = _Relevance(suite.project, {_class_stem(n) for n in suite.names})
     offsets, cls, scores, missing = [0], [], [], np.zeros(len(suite.builds), dtype=bool)
     try:
         for t, classes in _corpora(suite, "seen"):
+            if base is not None and t < len(base["offsets"]) - 1:
+                part = slice(base["offsets"][t], base["offsets"][t + 1])
+                cls.append(base["cls"][part])
+                scores.append(base["score"][part])
+                offsets.append(offsets[-1] + part.stop - part.start)
+                missing[t] = base["missing"][t]
+                continue
             b = suite.builds.iloc[t]
             files = rel.repo.tree(b["trunk_sha"])
             missing[t] = files is None
@@ -363,7 +372,7 @@ def stickiness(cls: np.ndarray, failed: np.ndarray, weight: np.ndarray | None = 
 
 
 def stage_counts(suite: Suite) -> np.ndarray:
-    runs = lrts.load_runs(suite.project).groupby(["pr_name", "build_id"]).size()
+    runs = lrts.load_runs(suite.project, later=suite.key != suite.project).groupby(["pr_name", "build_id"]).size()
     return runs.reindex(pd.MultiIndex.from_arrays([suite.builds["pr_name"], suite.builds["build_id"]])).to_numpy()
 
 

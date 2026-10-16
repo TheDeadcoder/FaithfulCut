@@ -80,7 +80,7 @@ def operational(suite: Suite, seed: int, issues: pd.DataFrame | None = None, win
 def load_operational(suite: Suite, seed: int) -> np.ndarray:
     """`operational` for the default parameters, cached per project and seed."""
     root = os.environ.get("FAITHFULCUT_CACHE")
-    path = Path(root) / f"operational-v{VERSION}" / f"{suite.project}-{seed}.npy" if root else None
+    path = Path(root) / f"operational-v{VERSION}" / f"{suite.key}-{seed}.npy" if root else None
     if path is not None and path.exists():
         return np.load(path)
     label = operational(suite, seed)
@@ -98,7 +98,7 @@ def _transfer_path(project: str) -> Path | None:
 
 
 def _transfer_flags(suite: Suite) -> dict[str, np.ndarray]:
-    path = _transfer_path(suite.project)
+    path = _transfer_path(suite.key)
     if path is not None and path.exists():
         return dict(np.load(path))
     failures = lrts_ref.failure_masks(suite.project)

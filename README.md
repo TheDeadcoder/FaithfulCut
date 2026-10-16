@@ -80,6 +80,12 @@ python scripts/tune_budgets.py data/results/dev --out tuned_budgets.csv
 python scripts/drift.py
 ```
 
+The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
+
+```bash
+python scripts/build_later.py
+```
+
 The change-based scores are precomputed for replay speed; their per-build computing time is measured separately on consecutive dev builds:
 
 ```bash
