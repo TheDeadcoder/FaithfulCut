@@ -54,6 +54,12 @@ DANTE's relevance scores for its nine Java projects are computed once into `FAIT
 python scripts/build_dante.py
 ```
 
+The structural orders rank tests by module distance and by path distance from the build's changed files. Module distance follows the module graph at the build's base commit, read from its `pom.xml` files or Kafka's root `build.gradle`. Both are computed once into `FAITHFULCUT_CACHE`:
+
+```bash
+python scripts/build_structure.py
+```
+
 ## Experiments
 
 Labels for every audit seed are computed once, then each configuration runs in parallel. Results go to `data/results/<name>`.
@@ -96,6 +102,12 @@ A controller can instead target new failures, failures of classes never seen fai
 
 ```bash
 python scripts/new_failures.py --target data/results/dev-full/control-newfail --operational data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/new-failures.md
+```
+
+The module set, meaning the changed modules and every module depending on them, also runs as a fixed selector at its natural operating point:
+
+```bash
+python scripts/module_set.py --evaluate 0.2 0.7 --out data/results/dev-full/module-set.md
 ```
 
 The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:

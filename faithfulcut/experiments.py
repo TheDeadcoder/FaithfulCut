@@ -9,7 +9,8 @@ from faithfulcut.ir import load_ir
 from faithfulcut.metrics import first_failure_time
 from faithfulcut.labels import cold_rows, load_operational, new_failures, transfer
 from faithfulcut.replay import replay
-from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers
+from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers, structure_scorers
+from faithfulcut.structure import NO_MODULES, load_structure
 from faithfulcut.suite import Suite, load_suite
 
 
@@ -24,6 +25,7 @@ def setup(project: str, seed: int, evaluate: tuple[float, float]):
     labels["firstfail_cold"] = labels["firstfail"] & cold_rows(suite)
     scorers = {**history_scorers(suite), **ir_scorers(suite, load_ir(full, "seen"))}
     scorers.update(hybrid_scorers(scorers["LatestFail+CC"], scorers["TF-IDF+CC"]))
+    scorers.update(structure_scorers(cache(lambda: load_structure(full)), scorers["TF-IDF+CC"]))
     if project in dante.PROJECTS:
         relevance = cache(lambda: dante.load_relevance(full))
         scorers.update(dante.dante_scorers(suite, relevance, dante.stage_counts(full)))
@@ -32,7 +34,9 @@ def setup(project: str, seed: int, evaluate: tuple[float, float]):
 
 
 def available(project: str, scorer: str) -> bool:
-    return not scorer.startswith("DANTE") or project in dante.PROJECTS
+    if scorer.startswith("DANTE"):
+        return project in dante.PROJECTS
+    return not scorer.startswith("Module") or project not in NO_MODULES
 
 
 FULL_RUN_BIT = 15

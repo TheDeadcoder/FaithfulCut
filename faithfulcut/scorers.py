@@ -1,9 +1,12 @@
+from typing import Callable
+
 import numpy as np
 
 from faithfulcut.replay import History, Scorer
 from faithfulcut.suite import Suite
 
 EPS = 1e-6
+SCALE = 1e9
 
 
 def qtf(history: History, t: int) -> np.ndarray:
@@ -87,3 +90,14 @@ def rank_fusion(first: Scorer, second: Scorer, k: int = 60) -> Scorer:
 def hybrid_scorers(history: Scorer, content: Scorer) -> dict[str, Scorer]:
     """History and change relevance combined: an equal budget split, and reciprocal rank fusion."""
     return {"Hybrid": depth_split(history, content), "Hybrid-RRF": rank_fusion(history, content)}
+
+
+def structure_scorers(structure: Callable[[], dict[str, np.ndarray]], content: Scorer) -> dict[str, Scorer]:
+    """Outcome-free orders from the change's structural footprint, module distance and path distance, each breaking
+    ties by duration as QTF does; and the module order fused with content by reciprocal rank."""
+
+    def by(key: str) -> Scorer:
+        return lambda h, t: structure()[key][t] * SCALE + h.last_duration
+
+    module = by("module")
+    return {"Module": module, "Path": by("path"), "Module+TF-IDF": rank_fusion(module, content)}
