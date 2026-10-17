@@ -92,6 +92,12 @@ python scripts/run_core.py
 python scripts/drift.py
 ```
 
+A controller can instead target new failures, failures of classes never seen failing in a finished warm-up or audited build, with `target = "newfail"` in its `[control]` section. Every control run also reports escapes on that label. This compares the two targets:
+
+```bash
+python scripts/new_failures.py --target data/results/dev-full/control-newfail --operational data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/new-failures.md
+```
+
 The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
 
 ```bash

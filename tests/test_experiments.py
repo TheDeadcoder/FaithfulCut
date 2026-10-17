@@ -10,7 +10,7 @@ from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cl
                                   replicate_rates, significant_flips, tuned_budgets)
 from faithfulcut.control import FixedCut
 from faithfulcut.experiments import make_controller, summarize
-from faithfulcut.labels import cold_rows
+from faithfulcut.labels import cold_rows, new_failures
 from faithfulcut.llm import risk_levels, timed_state
 from faithfulcut.metrics import first_failure_time
 from faithfulcut.replay import replay
@@ -214,3 +214,20 @@ def test_outcomes_from_several_folders_keep_their_rows(tmp_path):
     assert len(rows) == 8 and outcomes["row"].max() == 7
     two = condition_sums(rows, outcomes, "x", scorer="two")
     assert two.loc[two["lam"] == 0.1, "escaped"].sum() == 4
+
+
+def test_new_failures_are_classes_never_seen_failing_in_a_finished_full_run():
+    two = np.array([0, 1])
+    rows = [(two, np.array([True, False]), np.ones(2)), (two, np.array([True, True]), np.ones(2)),
+            (two, np.array([False, True]), np.ones(2)), (np.arange(3), np.array([True, True, True]), np.ones(3))]
+    start = np.arange(4) * 10.0
+    s = make_suite(rows, start, start + 1)
+    assert new_failures(s, s.failed, seed=0, pi=1.0).tolist() == [True, False, False, True, False, False, False,
+                                                                   False, True]
+    assert new_failures(s, s.failed, seed=0, pi=0.0).tolist() == [True, False, False, True, False, True, False,
+                                                                   True, True]
+    rows = [(two, np.array([False, False]), np.ones(2)), (two, np.array([True, False]), np.ones(2)),
+            (two, np.array([True, False]), np.ones(2))]
+    start = np.arange(3) * 10.0
+    late = make_suite(rows, start, np.array([1.0, 25.0, 21.0]))
+    assert new_failures(late, late.failed, seed=0, pi=1.0)[4:].tolist() == [True, False]

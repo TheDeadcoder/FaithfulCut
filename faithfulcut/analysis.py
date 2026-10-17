@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-LABELS = ("operational", "deconf", "firstfail", "firstfail_cold")
+LABELS = ("operational", "deconf", "firstfail", "firstfail_cold", "newfail")
 HISTORY = ["LatestFail", "LatestFail+CC", "FailCount+CC", "FailCount-W+CC", "TF-FailFreq+CC", "TF-FailFreq-W+CC"]
 PRICE_KEYS = ["project", "scorer", "regime", "pi", "seed"]
 CONTROL_KEYS = ["project", "scorer", "controller", "alpha", "pi"]
