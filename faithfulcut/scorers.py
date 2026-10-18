@@ -39,14 +39,24 @@ def history_scorers(suite: Suite) -> dict[str, Scorer]:
     return {"QTF": qtf, **base, **{f"{name}+CC": cost_cognizant(f) for name, f in base.items()}}
 
 
+def relevance(suite: Suite, ir: dict[str, np.ndarray]) -> Callable[[int], np.ndarray]:
+    """Each class's TF-IDF relevance to build t's change, zero where none was computed."""
+
+    def scores(t: int) -> np.ndarray:
+        out = np.zeros(len(suite.names))
+        part = slice(ir["offsets"][t], ir["offsets"][t + 1])
+        out[ir["cls"][part]] = ir["score"][part]
+        return out
+
+    return scores
+
+
 def ir_scorers(suite: Suite, ir: dict[str, np.ndarray]) -> dict[str, Scorer]:
     """LRTS's TF-IDF relevance of each class's test sources to the build's diff, plain and cost-cognizant."""
+    scores = relevance(suite, ir)
 
     def tfidf(h: History, t: int) -> np.ndarray:
-        scores = np.zeros(len(suite.names))
-        part = slice(ir["offsets"][t], ir["offsets"][t + 1])
-        scores[ir["cls"][part]] = ir["score"][part]
-        return 1 / (scores + EPS)
+        return 1 / (scores(t) + EPS)
 
     return {"TF-IDF": tfidf, "TF-IDF+CC": lambda h, t: tfidf(h, t) * (h.last_duration + EPS)}
 

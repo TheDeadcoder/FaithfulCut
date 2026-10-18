@@ -16,7 +16,8 @@ def price_jobs(cfg: dict) -> list:
     arms += [("faithful", 0.0, k, 0.0) for k in p.get("schedules", [])]
     arms += [("faithful", 0.0, 0, r) for r in p.get("rotations", [])]
     return [(price_task, (project, scorer, regime, pi, seed, p["lambdas"], evaluate, cfg.get("retire_after"),
-                          p.get("per_build", False), k, r, p.get("latency", False)))
+                          p.get("per_build", False), k, r, p.get("latency", False), p.get("threshold", False),
+                          p.get("path_filter", False)))
             for project in cfg["projects"] for scorer in p["scorers"] if available(project, scorer)
             for regime, pi, k, r in arms for seed in range(p["seeds"])]
 

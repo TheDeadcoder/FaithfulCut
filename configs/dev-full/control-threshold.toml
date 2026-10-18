@@ -1,0 +1,19 @@
+name = "dev-full/control-threshold"
+evaluate = [0.2, 0.7]
+projects = ["activemq", "hadoop", "hbase", "hive", "jackrabbit-oak", "james", "karaf", "log4j", "tvm", "kafka"]
+
+[control]
+scorers = ["TF-IDF+CC", "Hybrid-RRF"]
+alphas = [0.05, 0.1]
+pis = [0.1, 0.25]
+controllers = ["online"]
+fixed = []
+eta = 0.2
+cap = 6.9
+split_window = 19
+pac_window = 59
+pac_delta = 0.05
+meta_period = 20
+seeds = 30
+per_build = true
+threshold = true

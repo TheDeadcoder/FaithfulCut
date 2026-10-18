@@ -135,3 +135,25 @@ def test_hidden_failures_wait_until_their_class_runs_again():
     s = three_classes({1: [0], 3: [0]}, 4)
     rep = replay(s, "faithful", qtf, lam=0.0, warmup=0.0, schedule=2)
     assert hidden_latency(s, rep, s.failed, np.ones(4, dtype=bool)) == (2, 1.0)
+
+
+def by_index(history, t):
+    return np.arange(len(history.known), dtype=float)
+
+
+def test_a_relevance_threshold_covers_its_share_of_the_mass_and_runs_everything_without_one():
+    s = three_classes({}, 3)
+    weights = {1: np.array([0.6, 0.3, 0.1]), 2: np.zeros(3)}
+    mass = lambda t: weights.get(t, np.ones(3))
+    run = lambda tau: replay(s, "faithful", by_index, lam=-np.log(1 - tau), warmup=0.0, mass=mass)
+    assert s.cls[s.rows(1)][run(0.5).selected[s.rows(1)]].tolist() == [0]
+    assert s.cls[s.rows(1)][run(0.7).selected[s.rows(1)]].tolist() == [0, 1]
+    assert s.cls[s.rows(2)][run(0.2).selected[s.rows(2)]].tolist() == [0, 1, 2]
+
+
+def test_a_filter_runs_only_its_classes_and_the_unseen_ones():
+    s = make_suite([(np.arange(2), np.zeros(2, bool), np.ones(2)), (np.arange(3), np.zeros(3, bool), np.ones(3))],
+                   np.array([0.0, 10.0]), np.array([1.0, 11.0]))
+    only = lambda t: np.array([False, True, False]) if t == 1 else None
+    rep = replay(s, "faithful", by_index, lam=1.0, warmup=0.0, only=only)
+    assert s.cls[s.rows(1)][rep.selected[s.rows(1)]].tolist() == [1, 2]

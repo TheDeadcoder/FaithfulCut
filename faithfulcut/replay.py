@@ -11,6 +11,7 @@ from faithfulcut.suite import Suite
 
 REGIMES = ("full", "timed", "faithful")
 AUDIT_FLOOR = 0.05
+MASS_FLOOR = 1e-3
 
 
 def audit_coins(seed: int, n_builds: int) -> np.ndarray:
@@ -131,7 +132,8 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
            warmup: float = 0.2, retire_after: int | None = None, label: np.ndarray | None = None, feedback: str = "audits",
            cap: float = np.inf, monitor: Monitor | None = None, hold: int = 20,
            signal: Callable[[int, np.ndarray, float], float] | None = None, adaptive: bool = False,
-           schedule: int = 0, rotate: float = 0.0) -> Replay:
+           schedule: int = 0, rotate: float = 0.0, mass: Callable[[int], np.ndarray] | None = None,
+           only: Callable[[int], np.ndarray | None] | None = None) -> Replay:
     """Replay the suite under one information regime.
 
     `lam` is a fixed cut or a controller; with a per-row `label`, every faulty build seen in full (warm-up or
@@ -145,6 +147,10 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
     After the warm-up, `schedule` runs every schedule-th build in full, at a phase set by the seed, and `rotate` also
     runs the classes not selected that were observed longest ago, within that share of the predicted suite cost. Both
     refresh the history; neither reaches the controller.
+
+    With `mass(t)`, a class's depth is -log of the share of the build's mass still uncovered before it in the order,
+    floored at MASS_FLOOR, so a cut at d covers 1 - exp(-d) of the mass; a build without mass runs every class. Where
+    `only(t)` gives a mask, the build runs just those classes and the unseen ones.
     """
     if regime not in REGIMES:
         raise ValueError(f"unknown regime {regime}")
@@ -205,9 +211,17 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
         order = catalog[np.lexsort((tie_breaks(seed, t, n_classes)[catalog], scorer(history, t)[catalog]))]
         cumulative = np.cumsum(history.last_duration[order])
         depth_by_class = np.full(n_classes, -np.inf)
-        depth_by_class[order] = cumulative / cumulative[-1] if len(order) and cumulative[-1] > 0 else 0.0
+        if mass is not None:
+            weight = mass(t)[order]
+            covered = (np.cumsum(weight) - weight) / weight.sum() if weight.sum() > 0 else np.zeros(len(order))
+            depth_by_class[order] = -np.log(np.maximum(1 - covered, MASS_FLOOR))
+        else:
+            depth_by_class[order] = cumulative / cumulative[-1] if len(order) and cumulative[-1] > 0 else 0.0
         depth = depth_by_class[cls]
         selected = depth <= lam_t
+        allowed = only(t) if only is not None else None
+        if allowed is not None:
+            selected = np.isneginf(depth) | allowed[cls]
         if signal is not None:
             rep.signal[t] = signal(t, depth_by_class, lam_t)
         rep.seconds[t] = perf_counter() - clock
