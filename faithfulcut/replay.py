@@ -32,6 +32,7 @@ class History:
         self.weighted_fails = np.zeros(n_classes)
         self.since_fail = np.zeros(n_classes)
         self.last_duration = np.zeros(n_classes)
+        self.last_seen = np.full(n_classes, -1)
         self.cofails = {}
         self.weighted_cofails = {}
         # the latest observed builds as (build, classes, failed, weights, sequence number); `derived` caches
@@ -54,6 +55,7 @@ class History:
         self.weighted_fails[cls] += weight * failed
         self.since_fail[cls] = np.where(failed, 1, self.since_fail[cls] + 1)
         self.last_duration[cls] = duration
+        self.last_seen[cls] = self.observed
         self.recent.append((build, cls, failed, weight, self.observed))
         self.observed += 1
         failing = list(zip(cls[failed].tolist(), weight[failed].tolist()))
@@ -95,8 +97,10 @@ class Replay:
     # predicted-cost fraction of the ordered catalog up to and including each present class; -inf runs by default
     depth: np.ndarray
     selected: np.ndarray
+    # rows run beyond the cut to refresh the stalest classes
+    rotated: np.ndarray
     history: History
-    # why a build ran in full regardless of its cut: 0 it did not, 1 warm-up, 2 size cap, 3 alarm
+    # why a build ran in full regardless of its cut: 0 it did not, 1 warm-up, 2 size cap, 3 alarm, 4 schedule
     reason: np.ndarray
     cut: object
     # each build's audit probability, and the share of change relevance outside its cut (NaN without a signal)
@@ -106,7 +110,7 @@ class Replay:
     alarms: list[int] = field(default_factory=list)
 
     def executed(self, suite: Suite) -> np.ndarray:
-        return self.selected | np.repeat(self.audited | self.forced, np.diff(suite.offsets))
+        return self.selected | self.rotated | np.repeat(self.audited | self.forced, np.diff(suite.offsets))
 
 
 def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.ndarray, absent: np.ndarray,
@@ -126,7 +130,8 @@ def _feedback(history: History, suite: Suite, regime: str, t: int, selected: np.
 def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed: int = 0,
            warmup: float = 0.2, retire_after: int | None = None, label: np.ndarray | None = None, feedback: str = "audits",
            cap: float = np.inf, monitor: Monitor | None = None, hold: int = 20,
-           signal: Callable[[int, np.ndarray, float], float] | None = None, adaptive: bool = False) -> Replay:
+           signal: Callable[[int, np.ndarray, float], float] | None = None, adaptive: bool = False,
+           schedule: int = 0, rotate: float = 0.0) -> Replay:
     """Replay the suite under one information regime.
 
     `lam` is a fixed cut or a controller; with a per-row `label`, every faulty build seen in full (warm-up or
@@ -136,6 +141,10 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
     `adaptive`, the build's audit probability is pi times that share over its running mean after the warm-up, kept
     within [AUDIT_FLOOR, 1]; audit-only observations then weigh 1 / pi_t, controller steps pi / pi_t, and the monitor
     reads only the audits below AUDIT_FLOOR, a uniform sample shared by every policy.
+
+    After the warm-up, `schedule` runs every schedule-th build in full, at a phase set by the seed, and `rotate` also
+    runs the classes not selected that were observed longest ago, within that share of the predicted suite cost. Both
+    refresh the history; neither reaches the controller.
     """
     if regime not in REGIMES:
         raise ValueError(f"unknown regime {regime}")
@@ -153,11 +162,16 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
         lam=np.zeros(n_builds), audited=audited, forced=np.zeros(n_builds, dtype=bool),
         known=np.zeros(n_builds, dtype=np.int64), full_cost=np.zeros(n_builds), base_cost=np.zeros(n_builds),
         executed_cost=np.zeros(n_builds), seconds=np.zeros(n_builds),
-        depth=np.zeros(n_rows, dtype=np.float32), selected=np.zeros(n_rows, dtype=bool), history=history,
+        depth=np.zeros(n_rows, dtype=np.float32), selected=np.zeros(n_rows, dtype=bool),
+        rotated=np.zeros(n_rows, dtype=bool), history=history,
         reason=np.zeros(n_builds, dtype=np.int8), cut=cut, pi=np.full(n_builds, pi),
         signal=np.full(n_builds, np.nan),
     )
     forced = rep.forced
+    scheduled = np.zeros(n_builds, dtype=bool)
+    if schedule:
+        after = np.flatnonzero(~warm)
+        scheduled[after[seed % schedule::schedule]] = True
     pending, notes, alarm_until = [], {}, -1
     signal_sum = signal_count = 0.0
 
@@ -203,19 +217,24 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
             audited[t] = coins[t] < rep.pi[t]
             signal_sum, signal_count = signal_sum + rep.signal[t], signal_count + 1
 
-        rep.reason[t] = 1 if warm[t] else 2 if lam_t >= cap else 3 if t < alarm_until else 0
+        rep.reason[t] = 1 if warm[t] else 2 if lam_t >= cap else 3 if t < alarm_until else 4 if scheduled[t] else 0
         forced[t] = rep.reason[t] > 0
         duration = suite.duration[rows]
         rep.lam[t] = lam_t
         rep.depth[rows], rep.selected[rows], rep.known[t] = depth, selected, len(catalog)
         rep.full_cost[t], rep.base_cost[t] = duration.sum(), duration[selected].sum()
         full_run = audited[t] or forced[t]
-        rep.executed_cost[t] = rep.full_cost[t] if full_run else rep.base_cost[t]
+        if rotate and not full_run and len(order):
+            spare = np.flatnonzero(~selected & history.known[cls])
+            spare = spare[np.argsort(history.last_seen[cls[spare]], kind="stable")]
+            rep.rotated[rows][spare[np.cumsum(history.last_duration[cls[spare]]) <= rotate * cumulative[-1]]] = True
+        run = selected | rep.rotated[rows]
+        rep.executed_cost[t] = rep.full_cost[t] if full_run else duration[run].sum()
 
         present = np.zeros(n_classes, dtype=bool)
         present[cls] = True
         checked = catalog if full_run or regime != "faithful" else catalog[depth_by_class[catalog] <= lam_t]
-        notes[t] = (selected, checked[~present[checked]])
+        notes[t] = (run, checked[~present[checked]])
         if regime == "full":
             deliver(t, t + 1)
         else:

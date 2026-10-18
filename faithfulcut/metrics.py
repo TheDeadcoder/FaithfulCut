@@ -10,8 +10,8 @@ def escapes(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndarray) ->
     n = len(suite.builds)
     faulty = np.bincount(of_row, weights=label, minlength=n) > 0
     caught = np.bincount(of_row, weights=label & rep.selected, minlength=n) > 0
-    base = faulty & ~caught
-    executed = base & ~(rep.audited | rep.forced)
+    found = np.bincount(of_row, weights=label & rep.executed(suite), minlength=n) > 0
+    base, executed = faulty & ~caught, faulty & ~found
     return int(faulty[builds].sum()), int(base[builds].sum()), int(executed[builds].sum())
 
 
@@ -47,3 +47,18 @@ def first_failure_time(suite: Suite, rep: Replay, label: np.ndarray, builds: np.
         if hit.any():
             out[t] = np.cumsum(np.where(ran, suite.duration[rows][order], 0.0))[np.argmax(hit)]
     return out
+
+
+def hidden_latency(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndarray) -> tuple[int, float]:
+    """Labeled failing rows of `builds` that did not run, and the mean number of builds until their class next runs;
+    rows whose class never runs again are left out of the mean."""
+    n = len(suite.builds)
+    of_row = suite.build_of_rows()
+    executed = rep.executed(suite)
+    hidden = np.flatnonzero(label & ~executed & builds[of_row])
+    runs = np.sort(suite.cls[executed].astype(np.int64) * n + of_row[executed])
+    i = np.searchsorted(runs, suite.cls[hidden].astype(np.int64) * n + of_row[hidden], side="right")
+    found = i < len(runs)
+    found[found] = runs[i[found]] // n == suite.cls[hidden][found]
+    later = runs[i[found]] % n - of_row[hidden][found]
+    return len(hidden), float(later.mean()) if len(later) else np.nan

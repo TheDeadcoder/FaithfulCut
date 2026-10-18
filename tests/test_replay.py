@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from synthetic import make_suite, perturb, random_suite
 
+from faithfulcut.metrics import hidden_latency
 from faithfulcut.replay import REGIMES, audit_coins, replay
 from faithfulcut.scorers import qtf
 
@@ -109,3 +110,28 @@ def test_audit_only_observations_carry_inverse_propensity_weight():
     assert rep.history.runs[0] == n
     assert rep.history.runs[1] == forced + by_audit
     assert np.isclose(rep.history.weighted_runs[1], forced + by_audit / 0.25)
+
+
+def three_classes(failing, n_builds):
+    rows = [(np.arange(3), np.isin(np.arange(3), failing.get(t, [])), np.ones(3)) for t in range(n_builds)]
+    start = np.arange(n_builds) * 10.0
+    return make_suite(rows, start, start + 1)
+
+
+def test_scheduled_full_runs_follow_the_seeded_phase_after_the_warmup():
+    s = three_classes({}, 10)
+    rep = replay(s, "faithful", qtf, lam=0.0, seed=1, warmup=0.2, schedule=4)
+    assert np.flatnonzero(rep.reason == 4).tolist() == [3, 7] and rep.forced[[3, 7]].all()
+
+
+def test_rotation_runs_the_stalest_classes_within_its_budget():
+    s = three_classes({}, 4)
+    rep = replay(s, "faithful", qtf, lam=0.0, warmup=0.0, rotate=0.34)
+    assert [s.cls[s.rows(t)][rep.rotated[s.rows(t)]].tolist() for t in range(4)] == [[], [0], [1], [2]]
+    assert not rep.selected[s.rows(1)].any() and rep.executed_cost[1] == 1.0 and rep.base_cost[1] == 0.0
+
+
+def test_hidden_failures_wait_until_their_class_runs_again():
+    s = three_classes({1: [0], 3: [0]}, 4)
+    rep = replay(s, "faithful", qtf, lam=0.0, warmup=0.0, schedule=2)
+    assert hidden_latency(s, rep, s.failed, np.ones(4, dtype=bool)) == (2, 1.0)

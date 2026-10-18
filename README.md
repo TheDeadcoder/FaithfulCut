@@ -110,6 +110,16 @@ The module set, meaning the changed modules and every module depending on them, 
 python scripts/module_set.py --evaluate 0.2 0.7 --out data/results/dev-full/module-set.md
 ```
 
+Two more ways to see what a selector skips can be added alongside random audits:
+- scheduled full runs every k builds: `schedules` in a price grid, or `schedule` in a `[control]` section;
+- stalest-first rotation within a share of the predicted suite cost: `rotations`, or `rotate`.
+
+With `latency = true`, a run also records how many builds a skipped failure stays unseen. This compares the three at equal extra cost:
+
+```bash
+python scripts/information_repair.py --repair data/results/dev-full/price-repair --full data/results/dev-full/price-main --control data/results/dev-full/control-repair* --out data/results/dev-full/information-repair.md
+```
+
 The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
 
 ```bash
