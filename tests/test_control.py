@@ -4,7 +4,7 @@ from scipy import stats
 from synthetic import make_suite, perturb, random_suite
 
 from faithfulcut.control import (
-    AUDIT, WARMUP, FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, crc_quantile, ht_widths, max_pending,
+    AUDIT, WARMUP, Cusum, FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, crc_quantile, ht_widths, max_pending,
     online_slack, pac_quantile, transfer_widths,
 )
 from faithfulcut.replay import AUDIT_FLOOR, audit_coins, replay
@@ -195,3 +195,11 @@ def test_adaptive_audits_ignore_rows_never_run():
     b = replay(perturb(s, ~a.executed(s)), "faithful", qtf, lam=0.3, pi=0.2, seed=3, signal=change_share(),
                adaptive=True)
     assert np.array_equal(a.audited, b.audited) and np.array_equal(a.selected, b.selected)
+
+
+def test_cusum_alarms_on_a_run_of_misses_and_rarely_at_the_target_rate():
+    c = Cusum(alpha=0.1, ratio=3.0, h=5.0)
+    assert [c.update(1.0) for _ in range(5)] == [False, False, False, False, True]
+    rng = np.random.default_rng(0)
+    c = Cusum(alpha=0.1, ratio=3.0, h=5.0)
+    assert sum(c.update(float(x)) for x in rng.random(2000) < 0.1) <= 3

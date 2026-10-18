@@ -126,6 +126,22 @@ Two options change how much a build tests. With `threshold = true`, the cut cove
 python scripts/compare_variants.py --kind control --variant data/results/dev-full/control-threshold --baseline data/results/dev-full/control-main --orders TF-IDF+CC Hybrid-RRF --evaluate 0.2 0.7 --out data/results/dev-full/threshold-control.md
 ```
 
+Drift can be injected into the replays to see how the controller and its monitor react. A `[drift]` section names the kinds, the injection position and the horizon. The kinds are `rename`, `burst` and `slow`, each with an optional severity such as `burst:10`:
+
+```bash
+python scripts/run_experiments.py configs/dev-full/drift.toml
+```
+
+```bash
+python scripts/drift_injection.py data/results/dev-full/drift --out data/results/dev-full/drift.md
+```
+
+Real renames of test sources in each project's history are counted with:
+
+```bash
+python scripts/count_renames.py
+```
+
 The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
 
 ```bash

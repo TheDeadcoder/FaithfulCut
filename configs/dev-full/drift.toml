@@ -1,0 +1,19 @@
+name = "dev-full/drift"
+evaluate = [0.2, 0.7]
+projects = ["hadoop", "hive", "jackrabbit-oak", "james", "kafka", "tvm"]
+
+[drift]
+scorers = ["LatestFail+CC", "TF-IDF+CC", "Hybrid-RRF"]
+kinds = ["clean", "rename:0.2", "rename:0.5", "burst:3", "burst:10", "slow:4"]
+pis = [0.1, 0.25]
+alpha = 0.1
+eta = 0.2
+cap = 0.8
+start = 0.45
+horizon = 300
+rename_share = 0.2
+burst_classes = 3
+burst_builds = 100
+slow_share = 0.2
+slow_factor = 4.0
+seeds = 10

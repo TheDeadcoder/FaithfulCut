@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from faithfulcut.drift import drift_task
 from faithfulcut.experiments import available, control_task, price_task
 
 
@@ -37,6 +38,13 @@ def control_jobs(cfg: dict) -> list:
             for kind, alpha, pi in runs for seed in range(c["seeds"])]
 
 
+def drift_jobs(cfg: dict) -> list:
+    d, evaluate = cfg["drift"], tuple(cfg["evaluate"])
+    return [(drift_task, (project, scorer, kind, pi, seed, d, evaluate))
+            for project in cfg["projects"] for scorer in d["scorers"] for kind in d["kinds"] for pi in d["pis"]
+            for seed in range(d["seeds"])]
+
+
 def call(job):
     fn, args = job
     return fn(*args)
@@ -64,13 +72,13 @@ def run(jobs: list, workers: int, label: str, out: Path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
-    parser.add_argument("--only", choices=["price", "control"])
+    parser.add_argument("--only", choices=["price", "control", "drift"])
     parser.add_argument("--workers", type=int, default=max((os.cpu_count() or 2) - 1, 1))
     args = parser.parse_args()
     cfg = tomllib.loads(Path(args.config).read_text())
     out = Path("data") / "results" / cfg["name"]
     out.mkdir(parents=True, exist_ok=True)
-    for name, jobs in (("price", price_jobs), ("control", control_jobs)):
+    for name, jobs in (("price", price_jobs), ("control", control_jobs), ("drift", drift_jobs)):
         if args.only in (None, name) and name in cfg:
             run(jobs(cfg), args.workers, name, out)
 
