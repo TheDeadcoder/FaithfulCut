@@ -142,6 +142,12 @@ Real renames of test sources in each project's history are counted with:
 python scripts/count_renames.py
 ```
 
+A price grid with `anatomy = true` splits each escape by cause (a new failure, a repeat whose earlier failure the replay observed, or one whose earlier failure it did not) and records the share of selected test time spent on failures outside DeConf. This reports why history orders lose, across budgets:
+
+```bash
+python scripts/why_history.py --price data/results/dev-full/price-main data/results/dev-full/price-rest --anatomy data/results/dev-full/price-anatomy --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/why-history.md
+```
+
 The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
 
 ```bash

@@ -1,0 +1,11 @@
+name = "dev-full/price-anatomy"
+evaluate = [0.2, 0.7]
+projects = ["activemq", "hadoop", "hbase", "hive", "jackrabbit-oak", "james", "karaf", "log4j", "tvm", "kafka"]
+
+[price]
+scorers = ["LatestFail+CC", "LatestFail", "DANTE", "Hybrid-RRF", "TF-IDF+CC"]
+conditions = [["full", 0.0], ["faithful", 0.0]]
+lambdas = [0.02, 0.03, 0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.3, 0.4, 0.55, 0.7, 0.85]
+seeds = 10
+latency = true
+anatomy = true

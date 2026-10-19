@@ -6,7 +6,7 @@ from faithfulcut import dante
 from faithfulcut.control import (Cusum, FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, ht_widths, max_pending,
                                  transfer_widths)
 from faithfulcut.ir import is_test_source, load_ir, lrts_pattern
-from faithfulcut.metrics import first_failure_time, hidden_latency
+from faithfulcut.metrics import escape_causes, first_failure_time, hidden_latency
 from faithfulcut.labels import cold_rows, load_operational, new_failures, transfer
 from faithfulcut.replay import replay
 from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers, relevance, structure_scorers
@@ -94,12 +94,14 @@ def path_filter(project: str, later: bool = False):
 
 
 def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray, timing: bool = False,
-              per_build: bool = False, latency: bool = False) -> dict:
+              per_build: bool = False, latency: bool = False, anatomy: str | None = None) -> dict:
     """Test work, feedback time and selector time and, per label, faulty builds, escapes, escapes masked by another
     selected failure and selected failing rows over the evaluated builds; `timing` adds the time to first failure.
     `per_build` adds, under "_builds", each evaluated build's test time, change signal and flags: for the i-th label,
     bits 3i, 3i+1 and 3i+2 mark faulty, caught by the selection and masked; bit FULL_RUN_BIT marks a full run.
-    `latency` adds failing rows that did not run and the mean builds until their class runs again."""
+    `latency` adds failing rows that did not run and the mean builds and hours until their class runs again.
+    `anatomy`, the replay's regime, adds escapes by cause (escape_causes) and the share of selected test time spent on
+    failures outside DeConf."""
     of_row = suite.build_of_rows()
     n = len(suite.builds)
     full_run = rep.audited | rep.forced
@@ -145,12 +147,20 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
             f"{name}_rows_selected": int((rows & rep.selected).sum()),
         })
         if latency:
-            out[f"{name}_hidden"], out[f"{name}_hidden_builds"] = hidden_latency(suite, rep, label, evaluate)
+            out[f"{name}_hidden"], out[f"{name}_hidden_builds"], out[f"{name}_hidden_hours"] = \
+                hidden_latency(suite, rep, label, evaluate)
+        if anatomy:
+            seen = executed if anatomy == "faithful" else np.ones(len(suite.cls), dtype=bool)
+            out.update({f"{name}_escape_{k}": v for k, v in escape_causes(suite, rep, label, evaluate, seen).items()})
         if timing:
             ttff = first_failure_time(suite, rep, label, faulty)
             found = ~np.isnan(ttff)
             out[f"{name}_ttff_hours"] = ttff[found].mean() / 3600 if found.any() else np.nan
             out[f"{name}_ttff_share"] = (ttff[found] / rep.full_cost[found]).mean() if found.any() else np.nan
+    if anatomy and "deconf" in labels:
+        chosen = rep.selected & evaluate[of_row]
+        out["waste_share"] = suite.duration[chosen & suite.failed & ~labels["deconf"]].sum() / \
+            max(suite.duration[chosen].sum(), 1e-9)
     if per_build:
         idx = np.flatnonzero(evaluate)
         out["_builds"] = {"labels": list(labels), "build": idx.astype(np.int32),
@@ -163,7 +173,7 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
 def price_task(project: str, scorer: str, regime: str, pi: float, seed: int, lambdas: list[float],
                evaluate: tuple[float, float], retire_after: int | None, per_build: bool = False, schedule: int = 0,
                rotate: float = 0.0, latency: bool = False, threshold: bool = False,
-               only_tests: bool = False) -> list[dict]:
+               only_tests: bool = False, anatomy: bool = False) -> list[dict]:
     """Replays over the lambda grid; `threshold` cuts at a share of the change's relevance mass instead of predicted
     cost, and `only_tests` runs just the changed and unseen tests when a change touches no production code."""
     suite, labels, scorers, mask = setup(project, seed, evaluate)
@@ -175,7 +185,7 @@ def price_task(project: str, scorer: str, regime: str, pi: float, seed: int, lam
          "cut": "relevance" if threshold else "cost", "path_filter": only_tests, "seed": seed, "lam": lam,
          **summarize(suite, replay(suite, regime, scorers[scorer], lam=lam, pi=pi, seed=seed, retire_after=retire_after,
                                    schedule=schedule, rotate=rotate, **extra), labels, mask, per_build=per_build,
-                     latency=latency)}
+                     latency=latency, anatomy=regime if anatomy else None)}
         for lam in lambdas
     ]
 
