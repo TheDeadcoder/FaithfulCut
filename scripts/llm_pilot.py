@@ -1,43 +1,15 @@
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from faithfulcut.ir import REPOS, load_ir
+from faithfulcut.ir import REPOS
 from faithfulcut.labels import transfer
-from faithfulcut.llm import cached_answer, prompt, risk_levels, timed_state
+from faithfulcut.llm import FUSIONS, evaluate
 from faithfulcut.suite import load_suite
 
-EPS = 1e-6
 BUDGET = 0.2
-FUSIONS = ("risk", "cost", "rrf")
-
-
-def caught(keys: list[np.ndarray], duration: np.ndarray, failing: np.ndarray, rng: np.random.Generator,
-           budget: float = BUDGET) -> float:
-    """Whether a failing class enters the prefix within `budget` of predicted time under the lexicographic keys."""
-    order = np.lexsort([rng.random(len(duration))] + keys[::-1])
-    cumulative = np.cumsum(duration[order])
-    depth = np.empty(len(order))
-    depth[order] = cumulative / cumulative[-1] if cumulative[-1] > 0 else 0.0
-    return float((depth[failing] <= budget).any())
-
-
-def llm_keys(ranks: np.ndarray, tfidf_cc: np.ndarray, duration: np.ndarray, fusion: str) -> list[np.ndarray]:
-    """Order keys for the LLM's risk levels: risk first then TF-IDF+CC ("risk"); risk value per predicted second
-    ("cost"); or reciprocal rank fusion of the "risk" order with TF-IDF+CC ("rrf")."""
-    if fusion == "risk":
-        return [ranks, tfidf_cc]
-    if fusion == "cost":
-        return [-(3 - ranks) / (duration + EPS), tfidf_cc]
-    fused = np.zeros(len(ranks))
-    for order in (np.lexsort((tfidf_cc, ranks)), np.argsort(tfidf_cc, kind="stable")):
-        position = np.empty(len(ranks))
-        position[order] = np.arange(1, len(ranks) + 1)
-        fused += 1 / (60 + position)
-    return [-fused]
 
 
 def pilot_builds(projects: list[str], size: int, seed: int) -> list[tuple[str, int]]:
@@ -50,53 +22,6 @@ def pilot_builds(projects: list[str], size: int, seed: int) -> list[tuple[str, i
         candidates += [(project, int(t)) for t in np.flatnonzero(first & (position >= 0.2) & (position < 0.7))]
     pick = np.random.default_rng(seed).choice(len(candidates), min(size, len(candidates)), replace=False)
     return [candidates[i] for i in sorted(pick)]
-
-
-def evaluate(project: str, builds: list[int], model: str, dry_run: bool, workers: int, fusion: str = "risk",
-             offline: bool = False, budget: float = BUDGET) -> list[dict]:
-    suite = load_suite(project)
-    first = transfer(suite)["firstfail"]
-    ir = load_ir(suite, "seen")
-    state = timed_state(suite, builds)
-    rows = []
-
-    def one(t):
-        catalog, duration, since_fail = state[t]
-        if dry_run:
-            return t, None, len(prompt(suite, t, catalog))
-        return t, cached_answer(suite, t, catalog, model, offline), None
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        answers = list(pool.map(one, builds))
-    for t, answer, prompt_chars in answers:
-        catalog, duration, since_fail = state[t]
-        rows_t = suite.rows(t)
-        position = {c: i for i, c in enumerate(catalog)}
-        failing_cls = suite.cls[rows_t][first[rows_t]]
-        if not all(c in position for c in failing_cls) or (offline and answer is None):
-            continue
-        failing = np.array([position[c] for c in failing_cls])
-        scores = np.zeros(len(suite.names))
-        part = slice(ir["offsets"][t], ir["offsets"][t + 1])
-        scores[ir["cls"][part]] = ir["score"][part]
-        tfidf_cc = 1 / (scores[catalog] + EPS) * (duration + EPS)
-        rng = lambda: np.random.default_rng([t, len(catalog)])
-        row = {"project": project, "build": t, "classes": len(catalog),
-               "QTF": caught([duration], duration, failing, rng(), budget),
-               "LatestFail+CC": caught([(since_fail + EPS) * (duration + EPS)], duration, failing, rng(), budget),
-               "TF-IDF+CC": caught([tfidf_cc], duration, failing, rng(), budget)}
-        if answer is None:
-            row["prompt_chars"] = prompt_chars
-        else:
-            ranks, ok = risk_levels(answer, suite.names[catalog])
-            usage = answer.get("usageMetadata", {})
-            row.update({"LLM": caught(llm_keys(ranks, tfidf_cc, duration, fusion), duration, failing, rng(), budget),
-                        "well_formed": ok,
-                        "latency": answer["latency"], "input_tokens": usage.get("promptTokenCount"),
-                        "output_tokens": usage.get("candidatesTokenCount"),
-                        "thinking_tokens": usage.get("thoughtsTokenCount", 0)})
-        rows.append(row)
-    return rows
 
 
 def main():
@@ -115,8 +40,8 @@ def main():
     picked = pilot_builds(args.projects, args.size, args.seed)[:args.limit]
     rows = []
     for project in sorted({p for p, _ in picked}):
-        rows += evaluate(project, [t for p, t in picked if p == project], args.model, args.dry_run, args.workers,
-                         args.fusion, args.offline, args.budget)
+        rows += evaluate(project, [t for p, t in picked if p == project], args.model, args.budget, args.fusion,
+                         args.workers, args.dry_run, args.offline)
     df = pd.DataFrame(rows)
     out = Path("data") / "results" / "llm-pilot"
     out.mkdir(parents=True, exist_ok=True)

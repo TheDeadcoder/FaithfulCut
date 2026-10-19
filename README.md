@@ -174,8 +174,16 @@ The cost ledger turns the online controller's net saving, audits and selector ti
 python scripts/cost.py --price data/results/confirmatory/price-main --control data/results/confirmatory/control-main --evaluate 0.7 1.0 --out data/results/confirmatory/cost.md
 ```
 
-The LLM relevance pilot keeps every response in `FAITHFULCUT_CACHE`. It authenticates with `GEMINI_API_KEY` when set, and otherwise with Application Default Credentials on the Google Cloud project in `GOOGLE_CLOUD_PROJECT` (location `GOOGLE_CLOUD_LOCATION`, default `global`):
+The LLM relevance pilot keeps every response in `FAITHFULCUT_CACHE` as soon as it arrives, so a rerun asks only the builds without one. Dropped connections, timeouts, rate limits and server errors are retried with growing pauses, for up to 30 minutes per request. It authenticates with `GEMINI_API_KEY` when set, and otherwise with Application Default Credentials on the Google Cloud project in `GOOGLE_CLOUD_PROJECT` (location `GOOGLE_CLOUD_LOCATION`, default `global`):
 
 ```bash
 python scripts/llm_pilot.py
 ```
+
+H8 asks Flash-Lite about every confirmatory build with a FirstFail failure whose failing classes are in its catalog, and compares the recall of its risk order at 5% of predicted test time with TF-IDF+CC's. `--dry-run` only counts the builds and prompt sizes. `--shuffled` adds the registered control, which shows each build another confirmatory build's diff:
+
+```bash
+python scripts/llm_recall.py --out data/results/llm/h8.md
+```
+
+The registered report then takes its result into the primary family with `--llm data/results/llm/h8.json`.
