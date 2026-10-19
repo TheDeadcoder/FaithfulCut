@@ -107,6 +107,7 @@ def test_per_build_flags_record_faulty_caught_masked_and_full_runs():
     flags = int(builds["flags"][0])
     assert [(flags >> b) & 1 for b in range(6)] == [1, 0, 1, 1, 1, 0] and not flags >> 15
     assert builds["executed"].tolist() == [1.0] and builds["full"].tolist() == [6.0]
+    assert builds["base"].tolist() == [1.0]
 
 
 def outcome_rows(escapes, faulty=4, lams=(0.1, 0.3), works=(0.1, 0.3)):
@@ -227,9 +228,13 @@ def test_outcomes_from_several_folders_keep_their_rows(tmp_path):
         folder.mkdir()
         rows, outcomes = outcome_rows(escapes=(3 - i, 1))
         rows.assign(scorer=name).to_csv(folder / "price.csv", index=False)
-        np.savez(folder / "price_builds.npz", **outcomes)
+        np.savez(folder / "price_builds.npz", **outcomes, **({"base": outcomes["executed"]} if i else {}))
     rows, outcomes = load_outcomes([tmp_path / "one", tmp_path / "two"], "price")
-    assert len(rows) == 8 and outcomes["row"].max() == 7
+    assert len(rows) == 8 and outcomes["row"].max() == 7 and "base" not in outcomes
+    assert "base" in load_outcomes([tmp_path / "two"], "price")[1]
+    np.savez(tmp_path / "two" / "price_builds.npz", **{**outcomes, "labels": np.array(["y"])})
+    with pytest.raises(ValueError, match="different labels"):
+        load_outcomes([tmp_path / "one", tmp_path / "two"], "price")
     two = condition_sums(rows, outcomes, "x", scorer="two")
     assert two.loc[two["lam"] == 0.1, "escaped"].sum() == 4
 

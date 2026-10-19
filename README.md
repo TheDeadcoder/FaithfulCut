@@ -94,6 +94,8 @@ python scripts/report.py --price data/results/dev-full/price-main data/results/d
 python scripts/run_core.py
 ```
 
+`PREREGISTRATION-B.md` adds arms for the later builds: the new-failure target, structural orders, the relevance threshold and path filter, repair, and the learned orders, with their configurations in `configs/later-b` and their tests in `scripts/report_b.py`. Its running section lists the commands.
+
 ```bash
 python scripts/drift.py
 ```
