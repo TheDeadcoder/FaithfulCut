@@ -168,6 +168,12 @@ The change-based scores are precomputed for replay speed; their per-build comput
 python scripts/time_selectors.py
 ```
 
+The cost ledger turns the online controller's net saving, audits and selector time included, into test-hours, energy, emissions and runner cost per 1,000 builds. Energy uses Cloud Carbon Footprint's AWS compute and memory coefficients with its PUE, emissions Ember's global average grid intensity, and cost GitHub's price for Linux runners, from a 2-core executor at half load to an 8-core one at full load. The ledger also reports feedback time and the extra test time FAITHFUL needs to match FULL's escape at 20% work:
+
+```bash
+python scripts/cost.py --price data/results/confirmatory/price-main --control data/results/confirmatory/control-main --evaluate 0.7 1.0 --out data/results/confirmatory/cost.md
+```
+
 The LLM relevance pilot keeps every response in `FAITHFULCUT_CACHE`. It authenticates with `GEMINI_API_KEY` when set, and otherwise with Application Default Credentials on the Google Cloud project in `GOOGLE_CLOUD_PROJECT` (location `GOOGLE_CLOUD_LOCATION`, default `global`):
 
 ```bash
