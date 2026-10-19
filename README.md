@@ -148,6 +148,12 @@ A price grid with `anatomy = true` splits each escape by cause (a new failure, a
 python scripts/why_history.py --price data/results/dev-full/price-main data/results/dev-full/price-rest --anatomy data/results/dev-full/price-anatomy --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/why-history.md
 ```
 
+`Learned+CC` is a learned order in the style of predictive test selection: a gradient-boosted failure model on change relevance, co-failures, failure history, staleness and duration, refit on the latest observed builds and ordering classes by predicted failure probability per predicted second. `Learned-W+CC` weights each training outcome by its audit propensity, as the -W orders do. Each replay trains its own model from scratch. This compares them with the heuristic orders under each regime and under the online controller:
+
+```bash
+python scripts/learned_selector.py --price data/results/dev-full/price-main data/results/dev-full/price-learned data/results/dev-full/price-learned-w --control data/results/dev-full/control-main data/results/dev-full/control-learned --evaluate 0.2 0.7 --out data/results/dev-full/learned.md
+```
+
 H7 replays three industrial CI logs in RETECS's format: Paint Control and IOF/ROL from ABB Robotics, and GSDTSR from Google. They are published in the [atcs-data repository](https://bitbucket.org/HelgeS/atcs-data), and the H7 script compares FULL with FAITHFUL on them:
 
 ```bash

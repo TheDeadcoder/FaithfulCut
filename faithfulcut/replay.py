@@ -41,6 +41,8 @@ class History:
         self.recent = deque(maxlen=recent)
         self.observed = 0
         self.derived = {}
+        # called with each observed build's (build, classes, failed, weights)
+        self.listeners = []
 
     def catalog(self) -> np.ndarray:
         return np.flatnonzero(self.known & ~self.retired)
@@ -66,6 +68,8 @@ class History:
             for c, w in failing:
                 counts[c] = counts.get(c, 0.0) + 1.0
                 weighted[c] = weighted.get(c, 0.0) + w
+        for listen in self.listeners:
+            listen(build, cls, failed, weight)
 
     def max_cofail(self, files: np.ndarray, weighted: bool = False) -> np.ndarray:
         table = self.weighted_cofails if weighted else self.cofails
