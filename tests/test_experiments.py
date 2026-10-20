@@ -154,3 +154,11 @@ def test_tuned_budget_is_the_smallest_lambda_meeting_alpha():
     assert tuned[0.4] == pytest.approx(0.15) and tuned[0.2] == pytest.approx(0.25) and tuned[0.05] == 1.0
     cut = make_controller("tuned", 0.2, {"tuned": {("p", "s", 0.2): 0.25}, "cap": 0.8}, "p", "s")[0]
     assert isinstance(cut, FixedCut) and cut.decide(0, False) == 0.25
+
+
+def test_builds_skipping_most_change_relevance_are_flagged_for_review():
+    s = two_builds([0, 1], [5.0, 1.0])
+    label = np.array([False, False, True, False])
+    rep = replay(s, "full", qtf, lam=0.2, warmup=0.0, signal=lambda t, depth, lam: 0.9 if t == 1 else 0.1)
+    out = summarize(s, rep, {"x": label}, np.array([False, True]))
+    assert out["flagged"] == 1 and out["x_flagged_escape"] == 1 and out["audit_rate"] == 0.0
