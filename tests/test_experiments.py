@@ -9,7 +9,7 @@ from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cl
                                   condition_sums, energy, holm, kendall_tau, load_outcomes, one_sided, ranking_flips,
                                   replicate_rates, significant_flips, tuned_budgets)
 from faithfulcut.control import FixedCut
-from faithfulcut.experiments import make_controller, summarize
+from faithfulcut.experiments import is_documentation, make_controller, summarize
 from faithfulcut.labels import cold_rows, new_failures
 from faithfulcut.llm import risk_levels, timed_state
 from faithfulcut.metrics import first_failure_time
@@ -231,3 +231,8 @@ def test_new_failures_are_classes_never_seen_failing_in_a_finished_full_run():
     start = np.arange(3) * 10.0
     late = make_suite(rows, start, np.array([1.0, 25.0, 21.0]))
     assert new_failures(late, late.failed, seed=0, pi=1.0)[4:].tolist() == [True, False]
+
+
+def test_documentation_is_text_images_and_doc_folders_but_not_code_or_config():
+    assert all(map(is_documentation, ["README.md", "docs/a/b.java", "x/src/site/page.xml", "LICENSE", "NOTICE.txt"]))
+    assert not any(map(is_documentation, ["pom.xml", "core/src/main/java/A.java", "conf/log4j.properties"]))

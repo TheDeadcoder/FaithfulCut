@@ -120,6 +120,12 @@ With `latency = true`, a run also records how many builds a skipped failure stay
 python scripts/information_repair.py --repair data/results/dev-full/price-repair --full data/results/dev-full/price-main --control data/results/dev-full/control-repair* --out data/results/dev-full/information-repair.md
 ```
 
+Two options change how much a build tests. With `threshold = true`, the cut covers a share of the change's TF-IDF relevance mass instead of a share of predicted test time; λ is then -log of the uncovered share. With `path_filter = true`, a change that touches only documentation and test sources runs just its changed and new tests. This compares a variant's results with a baseline's for the same orders:
+
+```bash
+python scripts/compare_variants.py --kind control --variant data/results/dev-full/control-threshold --baseline data/results/dev-full/control-main --orders TF-IDF+CC Hybrid-RRF --evaluate 0.2 0.7 --out data/results/dev-full/threshold-control.md
+```
+
 The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
 
 ```bash

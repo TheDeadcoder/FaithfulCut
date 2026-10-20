@@ -5,11 +5,11 @@ import numpy as np
 from faithfulcut import dante
 from faithfulcut.control import (FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, ht_widths, max_pending,
                                  transfer_widths)
-from faithfulcut.ir import load_ir
+from faithfulcut.ir import is_test_source, load_ir, lrts_pattern
 from faithfulcut.metrics import first_failure_time, hidden_latency
 from faithfulcut.labels import cold_rows, load_operational, new_failures, transfer
 from faithfulcut.replay import replay
-from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers, structure_scorers
+from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers, relevance, structure_scorers
 from faithfulcut.structure import NO_MODULES, load_structure
 from faithfulcut.suite import Suite, load_suite
 
@@ -41,6 +41,7 @@ def available(project: str, scorer: str) -> bool:
 
 FULL_RUN_BIT = 15
 FLAG_SHARE = 0.5
+DOCUMENTATION = (".md", ".txt", ".rst", ".adoc", ".html", ".htm", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf")
 
 
 @lru_cache(maxsize=2)
@@ -55,6 +56,41 @@ def change_signal(project: str, later: bool = False):
         return float(score[depth_by_class[ir["cls"][part]] > lam].sum() / total) if total > 0 else 0.0
 
     return signal
+
+
+@lru_cache(maxsize=2)
+def change_mass(project: str, later: bool = False):
+    """Each class's TF-IDF relevance to the build's change: the mass a relevance threshold covers."""
+    full = load_suite(project, later)
+    return relevance(full, load_ir(full, "seen"))
+
+
+def is_documentation(path: str) -> bool:
+    parts = path.split("/")
+    return (path.lower().endswith(DOCUMENTATION) or bool({"docs", "doc", "site"} & set(parts[:-1]))
+            or parts[-1].split(".")[0].upper() in {"LICENSE", "NOTICE", "README", "CHANGES", "CHANGELOG"})
+
+
+@lru_cache(maxsize=2)
+def path_filter(project: str, later: bool = False):
+    """For a build whose change touches only documentation and test sources, a mask of its changed tests' classes;
+    None for any other build."""
+    full = load_suite(project, later)
+    stems: dict[str, list[int]] = {}
+    for c, name in enumerate(full.names):
+        stems.setdefault(lrts_pattern(project, name).rsplit("/", 1)[-1].split(".")[0], []).append(c)
+
+    def allowed(t: int) -> np.ndarray | None:
+        files = full.files[full.changed(t)].tolist()
+        if not files or not all(is_documentation(f) or is_test_source(f) for f in files):
+            return None
+        out = np.zeros(len(full.names), dtype=bool)
+        for f in files:
+            if is_test_source(f):
+                out[stems.get(f.rsplit("/", 1)[-1].split(".")[0], [])] = True
+        return out
+
+    return allowed
 
 
 def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray, timing: bool = False,
@@ -126,13 +162,19 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
 
 def price_task(project: str, scorer: str, regime: str, pi: float, seed: int, lambdas: list[float],
                evaluate: tuple[float, float], retire_after: int | None, per_build: bool = False, schedule: int = 0,
-               rotate: float = 0.0, latency: bool = False) -> list[dict]:
+               rotate: float = 0.0, latency: bool = False, threshold: bool = False,
+               only_tests: bool = False) -> list[dict]:
+    """Replays over the lambda grid; `threshold` cuts at a share of the change's relevance mass instead of predicted
+    cost, and `only_tests` runs just the changed and unseen tests when a change touches no production code."""
     suite, labels, scorers, mask = setup(project, seed, evaluate)
+    later = evaluate[1] > 1
+    extra = {"mass": change_mass(project, later) if threshold else None,
+             "only": path_filter(project, later) if only_tests else None}
     return [
         {"project": project, "scorer": scorer, "regime": regime, "pi": pi, "schedule": schedule, "rotate": rotate,
-         "seed": seed, "lam": lam,
+         "cut": "relevance" if threshold else "cost", "path_filter": only_tests, "seed": seed, "lam": lam,
          **summarize(suite, replay(suite, regime, scorers[scorer], lam=lam, pi=pi, seed=seed, retire_after=retire_after,
-                                   schedule=schedule, rotate=rotate), labels, mask, per_build=per_build,
+                                   schedule=schedule, rotate=rotate, **extra), labels, mask, per_build=per_build,
                      latency=latency)}
         for lam in lambdas
     ]
@@ -171,10 +213,13 @@ def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, 
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"),
                  warmup=cfg.get("warmup", 0.2),
                  signal=change_signal(project, evaluate[1] > 1), adaptive=audits == "adaptive",
-                 schedule=cfg.get("schedule", 0), rotate=cfg.get("rotate", 0.0))
+                 schedule=cfg.get("schedule", 0), rotate=cfg.get("rotate", 0.0),
+                 mass=change_mass(project, evaluate[1] > 1) if cfg.get("threshold") else None,
+                 only=path_filter(project, evaluate[1] > 1) if cfg.get("path_filter") else None)
     alarms = np.array([t for t in rep.alarms if t < len(mask)], dtype=int)
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
            "target": target, "schedule": cfg.get("schedule", 0), "rotate": cfg.get("rotate", 0.0),
+           "cut": "relevance" if cfg.get("threshold") else "cost", "path_filter": bool(cfg.get("path_filter")),
            **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False),
                        latency=cfg.get("latency", False)),
            "alarms": int(mask[alarms].sum()), "alarm_builds": int((mask & (rep.reason == 3)).sum())}
