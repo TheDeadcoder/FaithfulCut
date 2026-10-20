@@ -30,6 +30,14 @@ REGISTERED = {
     "later/sensitivity-eta-0.1.toml": "e1c12e9b70cfc0cff442d1681bf0a9e07b948fe3fe4b8ed4c9c1f66ffc8e4554",
     "later/sensitivity-eta-0.4.toml": "7b65f5c6d7aeef503e00bb1d1887898ed42befb51c6643a8dd3001019dc5cdbf",
     "later/sensitivity-warmup-0.1.toml": "70636f54d55196313fd895926ce47c7e757e6fb2859c0a95bdbd0f952678fcfd",
+    "later-b/control-filter.toml": "1a896bc990e5820ba2f2bbf9bcc34cc4ef275acd9ef1fc1ef223ca24247f8772",
+    "later-b/control-learned.toml": "06701e898735a5ab9c1dda51ed444cd913165f19a3b89de9448598c39603280f",
+    "later-b/control-newfail.toml": "fb8046086a3f853431a005bf944540168449d7662827c46a8fb9a1b9f2d321cd",
+    "later-b/control-structure.toml": "ae4b523847cb8ad80adb9726dc62ba8e4d4cc6bf9f96a9a0c15a443575e32955",
+    "later-b/control-threshold.toml": "4676ccbedde857c240fc70f4524d8e09b0d99fa9f9147979349426d44ca1f24f",
+    "later-b/price-learned-w.toml": "e5aee8bdaddc845d0e198ecc483add15221dffb1160203ef087c936199336ce5",
+    "later-b/price-learned.toml": "6ce747ea5975e041dd82fe02b2253607d582fb07a913009e510052ffbb219f14",
+    "later-b/price-repair.toml": "643ffb8a695e69efd2fbf8ec522cda868718beafab29ca6f5cff2a6303008a4b",
     "tuned_budgets.csv": "286a57a9700ddb8f1c59ac994b0a52340600baa98833782f113423955e6b3dba",
 }
 
@@ -40,7 +48,7 @@ def test_registered_files_are_unchanged():
 
 
 def test_registered_folders_hold_only_registered_configs():
-    for folder in ("confirmatory", "later"):
+    for folder in ("confirmatory", "later", "later-b"):
         found = {p.relative_to(CONFIGS).as_posix() for p in (CONFIGS / folder).glob("*.toml")}
         assert found == {p for p in REGISTERED if p.startswith(folder + "/")}
 

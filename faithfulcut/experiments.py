@@ -168,6 +168,7 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
         idx = np.flatnonzero(evaluate)
         out["_builds"] = {"labels": list(labels), "build": idx.astype(np.int32),
                           "executed": rep.executed_cost[idx].astype(np.float32),
+                          "base": rep.base_cost[idx].astype(np.float32),
                           "full": rep.full_cost[idx].astype(np.float32), "flags": flags[idx],
                           "signal": rep.signal[idx].astype(np.float32)}
     return out

@@ -150,19 +150,23 @@ def load_build_outcomes(folder: Path, kind: str) -> tuple[pd.DataFrame, dict[str
 
 
 def load_outcomes(folders: list, kind: str) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
-    """load_build_outcomes over several result folders, as one table."""
+    """load_build_outcomes over several result folders, as one table, keeping the outcomes every folder has."""
     frames, parts = [], []
     for folder in folders:
         rows, out = load_build_outcomes(Path(folder), kind)
         parts.append({**out, "row": out["row"] + sum(len(f) for f in frames)})
         frames.append(rows)
-    merged = {k: np.concatenate([p[k] for p in parts]) for k in parts[0] if k != "labels"}
+    if any(list(p["labels"]) != list(parts[0]["labels"]) for p in parts):
+        raise ValueError("the folders' outcomes record different labels")
+    shared = set.intersection(*(set(p) for p in parts)) - {"labels"}
+    merged = {k: np.concatenate([p[k] for p in parts]) for k in parts[0] if k in shared}
     return pd.concat(frames, ignore_index=True), {"labels": parts[0]["labels"], **merged}
 
 
 def condition_sums(rows: pd.DataFrame, outcomes: dict[str, np.ndarray], label: str, **keys) -> pd.DataFrame:
     """For the rows matching `keys`, per lambda and build, sums over seeds of faulty, escaped (base selection),
-    escaped without a full run, masked, executed and full test time."""
+    escaped without a full run, masked, executed and full test time, and the base selection's test time where the
+    outcomes record it."""
     match = np.logical_and.reduce([rows[k].to_numpy() == v for k, v in keys.items()])
     keep = match[outcomes["row"]]
     i = list(outcomes["labels"]).index(label)
@@ -174,6 +178,8 @@ def condition_sums(rows: pd.DataFrame, outcomes: dict[str, np.ndarray], label: s
                        "escaped": faulty & (1 - caught), "executed_escape": faulty & (1 - caught) & (1 - full_run),
                        "masked": masked, "executed": outcomes["executed"][keep].astype(float),
                        "full": outcomes["full"][keep].astype(float)})
+    if "base" in outcomes:
+        df["base"] = outcomes["base"][keep].astype(float)
     return df.groupby(["lam", "build"]).sum().reset_index()
 
 
