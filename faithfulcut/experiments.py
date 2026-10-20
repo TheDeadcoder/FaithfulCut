@@ -6,7 +6,7 @@ from faithfulcut import dante
 from faithfulcut.control import (FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, ht_widths, max_pending,
                                  transfer_widths)
 from faithfulcut.ir import load_ir
-from faithfulcut.metrics import first_failure_time
+from faithfulcut.metrics import first_failure_time, hidden_latency
 from faithfulcut.labels import cold_rows, load_operational, new_failures, transfer
 from faithfulcut.replay import replay
 from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers, structure_scorers
@@ -58,11 +58,12 @@ def change_signal(project: str, later: bool = False):
 
 
 def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray, timing: bool = False,
-              per_build: bool = False) -> dict:
+              per_build: bool = False, latency: bool = False) -> dict:
     """Test work, feedback time and selector time and, per label, faulty builds, escapes, escapes masked by another
     selected failure and selected failing rows over the evaluated builds; `timing` adds the time to first failure.
     `per_build` adds, under "_builds", each evaluated build's test time, change signal and flags: for the i-th label,
-    bits 3i, 3i+1 and 3i+2 mark faulty, caught by the selection and masked; bit FULL_RUN_BIT marks a full run."""
+    bits 3i, 3i+1 and 3i+2 mark faulty, caught by the selection and masked; bit FULL_RUN_BIT marks a full run.
+    `latency` adds failing rows that did not run and the mean builds until their class runs again."""
     of_row = suite.build_of_rows()
     n = len(suite.builds)
     full_run = rep.audited | rep.forced
@@ -86,9 +87,11 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
     if not np.isnan(rep.signal[evaluate]).all():
         out["flagged"] = int((flagged & evaluate).sum())
     flags = (full_run.astype(np.uint16) << FULL_RUN_BIT)
+    executed = rep.executed(suite)
     for i, (name, label) in enumerate(labels.items()):
         faulty = (np.bincount(of_row, weights=label, minlength=n) > 0) & evaluate
         caught = np.bincount(of_row, weights=label & rep.selected, minlength=n) > 0
+        found = np.bincount(of_row, weights=label & executed, minlength=n) > 0
         other = np.bincount(of_row, weights=suite.failed & ~label & rep.selected, minlength=n) > 0
         rows = label & evaluate[of_row]
         masked = faulty & ~caught & other
@@ -97,7 +100,7 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
         out.update({
             f"{name}_faulty": int(faulty.sum()),
             f"{name}_escape": int((faulty & ~caught).sum()),
-            f"{name}_executed_escape": int((faulty & ~caught & ~full_run).sum()),
+            f"{name}_executed_escape": int((faulty & ~found).sum()),
             f"{name}_masked": int(masked.sum()),
             f"{name}_flagged_escape": int((faulty & ~caught & flagged).sum()),
             f"{name}_audited": int((faulty & coin).sum()),
@@ -105,6 +108,8 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
             f"{name}_rows": int(rows.sum()),
             f"{name}_rows_selected": int((rows & rep.selected).sum()),
         })
+        if latency:
+            out[f"{name}_hidden"], out[f"{name}_hidden_builds"] = hidden_latency(suite, rep, label, evaluate)
         if timing:
             ttff = first_failure_time(suite, rep, label, faulty)
             found = ~np.isnan(ttff)
@@ -120,12 +125,15 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
 
 
 def price_task(project: str, scorer: str, regime: str, pi: float, seed: int, lambdas: list[float],
-               evaluate: tuple[float, float], retire_after: int | None, per_build: bool = False) -> list[dict]:
+               evaluate: tuple[float, float], retire_after: int | None, per_build: bool = False, schedule: int = 0,
+               rotate: float = 0.0, latency: bool = False) -> list[dict]:
     suite, labels, scorers, mask = setup(project, seed, evaluate)
     return [
-        {"project": project, "scorer": scorer, "regime": regime, "pi": pi, "seed": seed, "lam": lam,
-         **summarize(suite, replay(suite, regime, scorers[scorer], lam=lam, pi=pi, seed=seed,
-                                   retire_after=retire_after), labels, mask, per_build=per_build)}
+        {"project": project, "scorer": scorer, "regime": regime, "pi": pi, "schedule": schedule, "rotate": rotate,
+         "seed": seed, "lam": lam,
+         **summarize(suite, replay(suite, regime, scorers[scorer], lam=lam, pi=pi, seed=seed, retire_after=retire_after,
+                                   schedule=schedule, rotate=rotate), labels, mask, per_build=per_build,
+                     latency=latency)}
         for lam in lambdas
     ]
 
@@ -162,11 +170,13 @@ def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, 
     rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels[target],
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"),
                  warmup=cfg.get("warmup", 0.2),
-                 signal=change_signal(project, evaluate[1] > 1), adaptive=audits == "adaptive")
+                 signal=change_signal(project, evaluate[1] > 1), adaptive=audits == "adaptive",
+                 schedule=cfg.get("schedule", 0), rotate=cfg.get("rotate", 0.0))
     alarms = np.array([t for t in rep.alarms if t < len(mask)], dtype=int)
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
-           "target": target, **summarize(suite, rep, labels, mask, timing=True,
-                                         per_build=cfg.get("per_build", False)),
+           "target": target, "schedule": cfg.get("schedule", 0), "rotate": cfg.get("rotate", 0.0),
+           **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False),
+                       latency=cfg.get("latency", False)),
            "alarms": int(mask[alarms].sum()), "alarm_builds": int((mask & (rep.reason == 3)).sum())}
     of_row, n = suite.build_of_rows(), len(suite.builds)
     faulty = np.bincount(of_row, weights=labels[target], minlength=n) > 0
