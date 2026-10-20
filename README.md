@@ -70,6 +70,12 @@ python scripts/run_experiments.py configs/dev.toml
 python scripts/analyze.py data/results/dev
 ```
 
+With `per_build = true` in a configuration's `[price]` or `[control]` section, each evaluated build's outcome is also saved to `<section>_builds.npz`; the bootstrap helpers in `faithfulcut.analysis` resample those outcomes by pull request or by week. Fixed budgets tuned on a dev price grid are written once, and a `[control]` section's `tuned` entry points to the file:
+
+```bash
+python scripts/tune_budgets.py data/results/dev --out tuned_budgets.csv
+```
+
 ```bash
 python scripts/drift.py
 ```

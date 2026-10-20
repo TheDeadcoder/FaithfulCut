@@ -34,9 +34,15 @@ def available(project: str, scorer: str) -> bool:
     return not scorer.startswith("DANTE") or project in dante.PROJECTS
 
 
-def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray, timing: bool = False) -> dict:
+FULL_RUN_BIT = 15
+
+
+def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray, timing: bool = False,
+              per_build: bool = False) -> dict:
     """Test work, feedback time and selector time and, per label, faulty builds, escapes, escapes masked by another
-    selected failure and selected failing rows over the evaluated builds; `timing` adds the time to first failure."""
+    selected failure and selected failing rows over the evaluated builds; `timing` adds the time to first failure.
+    `per_build` adds, under "_builds", each evaluated build's test time and flags: for the i-th label, bits 3i, 3i+1
+    and 3i+2 mark faulty, caught by the selection and masked; bit FULL_RUN_BIT marks a full run."""
     of_row = suite.build_of_rows()
     n = len(suite.builds)
     full_run = rep.audited | rep.forced
@@ -53,16 +59,20 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
         "full_hours": rep.full_cost[evaluate].mean() / 3600,
         "decision_seconds": rep.seconds[evaluate].mean(),
     }
-    for name, label in labels.items():
+    flags = (full_run.astype(np.uint16) << FULL_RUN_BIT)
+    for i, (name, label) in enumerate(labels.items()):
         faulty = (np.bincount(of_row, weights=label, minlength=n) > 0) & evaluate
         caught = np.bincount(of_row, weights=label & rep.selected, minlength=n) > 0
         other = np.bincount(of_row, weights=suite.failed & ~label & rep.selected, minlength=n) > 0
         rows = label & evaluate[of_row]
+        masked = faulty & ~caught & other
+        flags |= (faulty.astype(np.uint16) << 3 * i) | (caught.astype(np.uint16) << 3 * i + 1) \
+            | (masked.astype(np.uint16) << 3 * i + 2)
         out.update({
             f"{name}_faulty": int(faulty.sum()),
             f"{name}_escape": int((faulty & ~caught).sum()),
             f"{name}_executed_escape": int((faulty & ~caught & ~full_run).sum()),
-            f"{name}_masked": int((faulty & ~caught & other).sum()),
+            f"{name}_masked": int(masked.sum()),
             f"{name}_audited": int((faulty & coin).sum()),
             f"{name}_audited_escape": int((faulty & coin & ~caught).sum()),
             f"{name}_rows": int(rows.sum()),
@@ -73,22 +83,28 @@ def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.nda
             found = ~np.isnan(ttff)
             out[f"{name}_ttff_hours"] = ttff[found].mean() / 3600 if found.any() else np.nan
             out[f"{name}_ttff_share"] = (ttff[found] / rep.full_cost[found]).mean() if found.any() else np.nan
+    if per_build:
+        idx = np.flatnonzero(evaluate)
+        out["_builds"] = {"labels": list(labels), "build": idx.astype(np.int32),
+                          "executed": rep.executed_cost[idx].astype(np.float32),
+                          "full": rep.full_cost[idx].astype(np.float32), "flags": flags[idx]}
     return out
 
 
 def price_task(project: str, scorer: str, regime: str, pi: float, seed: int, lambdas: list[float],
-               evaluate: tuple[float, float], retire_after: int | None) -> list[dict]:
+               evaluate: tuple[float, float], retire_after: int | None, per_build: bool = False) -> list[dict]:
     suite, labels, scorers, mask = setup(project, seed, evaluate)
     return [
         {"project": project, "scorer": scorer, "regime": regime, "pi": pi, "seed": seed, "lam": lam,
          **summarize(suite, replay(suite, regime, scorers[scorer], lam=lam, pi=pi, seed=seed,
-                                   retire_after=retire_after), labels, mask)}
+                                   retire_after=retire_after), labels, mask, per_build=per_build)}
         for lam in lambdas
     ]
 
 
-def make_controller(kind: str, alpha: float, cfg: dict):
-    """The cut, its feedback mode, its monitor and its size cap for one controller kind."""
+def make_controller(kind: str, alpha: float, cfg: dict, project: str = "", scorer: str = ""):
+    """The cut, its feedback mode, its monitor and its size cap for one controller kind; "tuned" is the fixed budget
+    tuned on the dev split for the project, order and alpha."""
     if kind == "online":
         return OnlineCut(alpha, cfg["eta"]), "audits", Monitor(alpha), cfg["cap"]
     if kind == "oracle":
@@ -99,6 +115,8 @@ def make_controller(kind: str, alpha: float, cfg: dict):
         return SplitCut(alpha, cfg["pac_window"], cfg["pac_delta"]), "audits", None, cfg["cap"]
     if kind == "meta":
         return MetaCut(period=cfg["meta_period"]), "audits", None, np.inf
+    if kind == "tuned":
+        return FixedCut(cfg["tuned"][(project, scorer, alpha)]), "audits", None, cfg["cap"]
     if kind.startswith("fixed-"):
         return FixedCut(float(kind.removeprefix("fixed-"))), "audits", None, cfg["cap"]
     raise ValueError(f"unknown controller {kind}")
@@ -107,11 +125,11 @@ def make_controller(kind: str, alpha: float, cfg: dict):
 def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, seed: int, cfg: dict,
                  evaluate: tuple[float, float]) -> list[dict]:
     suite, labels, scorers, mask = setup(project, seed, evaluate)
-    cut, feedback, monitor, cap = make_controller(kind, alpha, cfg)
+    cut, feedback, monitor, cap = make_controller(kind, alpha, cfg, project, scorer)
     rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels["operational"],
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"))
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
-           **summarize(suite, rep, labels, mask, timing=True)}
+           **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False))}
     if isinstance(cut, OnlineCut):
         of_row = suite.build_of_rows()
         faulty = np.bincount(of_row, weights=labels["operational"], minlength=len(suite.builds)) > 0
