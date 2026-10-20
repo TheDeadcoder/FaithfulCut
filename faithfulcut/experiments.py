@@ -8,6 +8,7 @@ from faithfulcut.control import (Cusum, FixedCut, MetaCut, Monitor, OnlineCut, S
 from faithfulcut.ir import is_test_source, load_ir, lrts_pattern
 from faithfulcut.metrics import escape_causes, first_failure_time, hidden_latency
 from faithfulcut.labels import cold_rows, load_operational, new_failures, transfer
+from faithfulcut.learned import learned_scorers
 from faithfulcut.replay import replay
 from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers, relevance, structure_scorers
 from faithfulcut.structure import NO_MODULES, load_structure
@@ -23,12 +24,14 @@ def setup(project: str, seed: int, evaluate: tuple[float, float]):
     labels = {"operational": load_operational(full, seed)[:rows]}
     labels.update({k: v[:rows] for k, v in transfer(full).items()})
     labels["firstfail_cold"] = labels["firstfail"] & cold_rows(suite)
-    scorers = {**history_scorers(suite), **ir_scorers(suite, load_ir(full, "seen"))}
+    ir = load_ir(full, "seen")
+    scorers = {**history_scorers(suite), **ir_scorers(suite, ir)}
     scorers.update(hybrid_scorers(scorers["LatestFail+CC"], scorers["TF-IDF+CC"]))
     scorers.update(structure_scorers(cache(lambda: load_structure(full)), scorers["TF-IDF+CC"]))
+    scorers.update(learned_scorers(suite, relevance(suite, ir), seed))
     if project in dante.PROJECTS:
-        relevance = cache(lambda: dante.load_relevance(full))
-        scorers.update(dante.dante_scorers(suite, relevance, dante.stage_counts(full)))
+        dante_relevance = cache(lambda: dante.load_relevance(full))
+        scorers.update(dante.dante_scorers(suite, dante_relevance, dante.stage_counts(full)))
     position = suite.builds["position"].to_numpy()
     return suite, labels, scorers, (position >= evaluate[0]) & (position < evaluate[1])
 

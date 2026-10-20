@@ -1,0 +1,10 @@
+name = "dev-full/price-learned"
+evaluate = [0.2, 0.7]
+projects = ["kafka", "james", "hive", "tvm", "hadoop", "jackrabbit-oak", "karaf", "hbase", "log4j", "activemq"]
+
+[price]
+scorers = ["Learned+CC"]
+conditions = [["full", 0.0], ["timed", 0.0], ["faithful", 0.0], ["faithful", 0.1]]
+lambdas = [0.02, 0.03, 0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.3, 0.4, 0.55, 0.7, 0.85]
+seeds = 10
+per_build = true
