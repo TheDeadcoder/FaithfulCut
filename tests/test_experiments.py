@@ -6,8 +6,8 @@ import pytest
 from synthetic import make_suite, random_suite
 
 from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cluster_weights, compare,
-                                  condition_sums, energy, holm, kendall_tau, load_outcomes, one_sided, ranking_flips,
-                                  replicate_rates, significant_flips, tuned_budgets, work_at_rate)
+                                  condition_sums, energy, holm, kendall_tau, load_outcomes, one_sided, pooled_share,
+                                  ranking_flips, replicate_rates, significant_flips, tuned_budgets, work_at_rate)
 from faithfulcut.control import FixedCut
 from faithfulcut.experiments import is_documentation, make_controller, summarize
 from faithfulcut.labels import cold_rows, new_failures
@@ -142,6 +142,12 @@ def test_work_at_a_rate_inverts_the_interpolated_curve():
     point = (rate[:, :1], work[:, :1])
     assert work_at_rate(*point, np.array([0.25]))[0] == pytest.approx(0.3)
     assert np.isnan(work_at_rate(*point, np.array([0.8]))[0]) and np.isnan(work_at_rate(*point, np.array([0.1]))[0])
+
+
+def test_pooled_share_weighs_units_over_strata():
+    a, b = (np.array([[1.0, 1.0], [2.0, 0.0]]), [1, 0]), (np.array([[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]]), [1, 1, 0])
+    assert pooled_share([a, b]).tolist() == pytest.approx([3 / 5, 1.0])
+    assert np.isnan(pooled_share([b])[1])
 
 
 def test_compare_and_holm():

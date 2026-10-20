@@ -300,6 +300,15 @@ def project_builds(project: str, evaluate: tuple[float, float], replicates: int 
     return builds, cluster_weights(build_clusters(suite.builds.iloc[builds], "pr"), replicates, seed)
 
 
+def pooled_share(parts: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+    """Per replicate, the share of units with the outcome pooled over strata. Each part pairs a stratum's bootstrap
+    weights over its units (replicates by units) with the units' outcomes."""
+    hits = sum(w @ np.asarray(y, dtype=float) for w, y in parts)
+    total = sum(w.sum(axis=1) for w, _ in parts)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return hits / total
+
+
 def matched_replicates(rows: pd.DataFrame, outcomes: dict, builds: np.ndarray, weights: np.ndarray, label: str,
                        work: float = 0.2, **keys) -> np.ndarray:
     """Bootstrap replicates of a price-grid condition's escape rate at matched executed work."""
