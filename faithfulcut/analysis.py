@@ -8,8 +8,16 @@ LABELS = ("operational", "deconf", "firstfail", "firstfail_cold", "newfail")
 HISTORY = ["LatestFail", "LatestFail+CC", "FailCount+CC", "FailCount-W+CC", "TF-FailFreq+CC", "TF-FailFreq-W+CC"]
 PRICE_KEYS = ["project", "scorer", "regime", "pi", "seed"]
 CONTROL_KEYS = ["project", "scorer", "controller", "alpha", "pi"]
-WATTS = (10.0, 300.0)
-GRAMS_CO2E_PER_KWH = (20.0, 700.0)
+# Cloud Carbon Footprint's AWS coefficients: watts per vCPU idle and at full load, kWh per GB-hour, PUE
+WATTS_PER_VCPU = (0.74, 3.5)
+KWH_PER_GB_HOUR = 0.000392
+PUE = 1.135
+# Ember's global average grid intensity, and GitHub-hosted Linux runners' price per core-minute
+GRAMS_CO2E_PER_KWH = 458.0
+DOLLARS_PER_CORE_MINUTE = 0.003
+# the executor running an hour of tests: (cores, load) at the low and the high end, and memory per core
+EXECUTORS = ((2, 0.5), (8, 1.0))
+GB_PER_CORE = 4.0
 
 
 def _labels(df: pd.DataFrame) -> list[str]:
@@ -97,10 +105,15 @@ def control_summary(control: pd.DataFrame) -> pd.DataFrame:
 
 
 def energy(test_hours: float) -> dict[str, float]:
-    """Energy and emissions of test time over the stated ranges of executor power and grid intensity."""
-    kwh = [test_hours * w / 1000 for w in WATTS]
-    return {"kwh_low": kwh[0], "kwh_high": kwh[1], "kg_co2e_low": kwh[0] * GRAMS_CO2E_PER_KWH[0] / 1000,
-            "kg_co2e_high": kwh[1] * GRAMS_CO2E_PER_KWH[1] / 1000}
+    """Energy, emissions and runner cost of test time on executors at the low and the high end of EXECUTORS:
+    Cloud Carbon Footprint's compute and memory energy times PUE, Ember's grid intensity, GitHub's runner price."""
+    out = {}
+    for end, (cores, load) in zip(("low", "high"), EXECUTORS):
+        watts = WATTS_PER_VCPU[0] + load * (WATTS_PER_VCPU[1] - WATTS_PER_VCPU[0])
+        kwh = test_hours * cores * (watts / 1000 + GB_PER_CORE * KWH_PER_GB_HOUR) * PUE
+        out.update({f"kwh_{end}": kwh, f"kg_co2e_{end}": kwh * GRAMS_CO2E_PER_KWH / 1000,
+                    f"dollars_{end}": test_hours * 60 * cores * DOLLARS_PER_CORE_MINUTE})
+    return out
 
 
 def break_even_hours(overhead_seconds: float, work: float) -> float:
@@ -194,6 +207,19 @@ def at_matched_work(rate: np.ndarray, work: np.ndarray, target: float) -> np.nda
         if w[0] <= target <= w[-1]:
             out[b] = np.interp(target, w, r)
     return out
+
+
+def work_at_rate(rate: np.ndarray, work: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Each replicate's executed share of test time at which its rate, interpolated in order of work, first falls to
+    that replicate's target (NaN if it starts at or below the target or never reaches it)."""
+    order = np.argsort(work, axis=0)
+    w, r = np.take_along_axis(work, order, 0), np.take_along_axis(rate, order, 0)
+    below = r <= target
+    i = below.argmax(axis=0)
+    j, b = np.maximum(i - 1, 0), np.arange(r.shape[1])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = w[j, b] + (target - r[j, b]) * (w[i, b] - w[j, b]) / (r[i, b] - r[j, b])
+    return np.where(below.any(axis=0) & (i > 0), out, np.nan)
 
 
 def compare(a: np.ndarray, b: np.ndarray) -> dict[str, float]:

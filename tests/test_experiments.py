@@ -7,7 +7,7 @@ from synthetic import make_suite, random_suite
 
 from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cluster_weights, compare,
                                   condition_sums, energy, holm, kendall_tau, load_outcomes, one_sided, ranking_flips,
-                                  replicate_rates, significant_flips, tuned_budgets)
+                                  replicate_rates, significant_flips, tuned_budgets, work_at_rate)
 from faithfulcut.control import FixedCut
 from faithfulcut.experiments import is_documentation, make_controller, summarize
 from faithfulcut.labels import cold_rows, new_failures
@@ -91,8 +91,10 @@ def test_cold_rows_count_runs_in_builds_finished_before_the_start():
 
 def test_energy_and_break_even_scale_linearly():
     e = energy(10.0)
-    assert (e["kwh_low"], e["kwh_high"]) == pytest.approx((0.1, 3.0))
-    assert (e["kg_co2e_low"], e["kg_co2e_high"]) == pytest.approx((0.002, 2.1))
+    low = 10 * 2 * ((0.74 + 0.5 * 2.76) / 1000 + 4 * 0.000392) * 1.135
+    assert e["kwh_low"] == pytest.approx(low) and e["kg_co2e_low"] == pytest.approx(low * 0.458)
+    assert e["dollars_low"] == pytest.approx(3.6) and e["dollars_high"] == pytest.approx(14.4)
+    assert energy(20.0)["kwh_high"] == pytest.approx(2 * e["kwh_high"])
     assert break_even_hours(36.0, 0.5) == pytest.approx(0.02) and break_even_hours(1.0, 1.0) == np.inf
 
 
@@ -130,6 +132,16 @@ def test_bootstrap_rates_interpolate_at_matched_work_for_every_replicate():
     lams, rate, work = replicate_rates(sums, np.arange(5), weights)
     assert rate[:, 0] == pytest.approx([0.75, 0.25]) and work[:, 0] == pytest.approx([0.1, 0.3])
     assert at_matched_work(rate, work, 0.2)[0] == pytest.approx(0.5)
+
+
+def test_work_at_a_rate_inverts_the_interpolated_curve():
+    rows, outcomes = outcome_rows(escapes=(3, 1))
+    _, rate, work = replicate_rates(condition_sums(rows, outcomes, "x", scorer="s"), np.arange(5),
+                                    cluster_weights(np.arange(5), replicates=50, seed=1))
+    assert work_at_rate(rate, work, at_matched_work(rate, work, 0.2))[0] == pytest.approx(0.2)
+    point = (rate[:, :1], work[:, :1])
+    assert work_at_rate(*point, np.array([0.25]))[0] == pytest.approx(0.3)
+    assert np.isnan(work_at_rate(*point, np.array([0.8]))[0]) and np.isnan(work_at_rate(*point, np.array([0.1]))[0])
 
 
 def test_compare_and_holm():
