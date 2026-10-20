@@ -3,7 +3,9 @@ import pytest
 from synthetic import make_suite, perturb, random_suite
 
 from faithfulcut.replay import History, replay
-from faithfulcut.scorers import depth_split, history_scorers, hybrid_scorers, ir_scorers, rank_fusion
+from faithfulcut.scorers import (depth_split, history_scorers, hybrid_scorers, ir_scorers, rank_fusion,
+                                 structure_scorers)
+from faithfulcut.structure import UNKNOWN
 
 
 def sequential(failing, n_classes=3, changed=None, durations=None):
@@ -111,3 +113,13 @@ def test_faithful_hybrids_ignore_rows_they_never_ran(name):
     b_suite = perturb(s, hidden)
     b = replay(b_suite, "faithful", hybrid(b_suite), lam=0.3, pi=0.2, seed=3)
     assert np.array_equal(a.selected, b.selected) and np.array_equal(a.depth, b.depth)
+
+
+def test_structural_orders_run_the_nearest_classes_first_and_break_ties_by_duration():
+    s = sequential([[], [], []], n_classes=4, durations=[4.0, 3.0, 2.0, 1.0])
+    distance = np.array([[UNKNOWN] * 4, [UNKNOWN] * 4, [1, 0, 1, UNKNOWN]], dtype=np.uint8)
+    structure = {"module": distance, "path": distance[:, ::-1].copy()}
+    scorers = structure_scorers(lambda: structure, ir_scorers(s, {"offsets": np.zeros(4, int), "cls": np.empty(0, int),
+                                                                  "score": np.empty(0)})["TF-IDF+CC"])
+    assert first_in_order(s, scorers["Module"], 2) == [1, 2, 0, 3]
+    assert first_in_order(s, scorers["Path"], 2) == [2, 3, 1, 0]

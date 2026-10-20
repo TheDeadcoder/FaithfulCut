@@ -4,8 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from faithfulcut.analysis import control_replicates, interval, load_build_outcomes, project_builds
-from faithfulcut.dante import PROJECTS as JAVA
+from faithfulcut.analysis import control_replicates, interval, load_outcomes, project_builds
 
 HISTORY = "LatestFail+CC"
 CHALLENGERS = ["TF-IDF+CC", "Hybrid-RRF", "Hybrid", "DANTE", "QTF"]
@@ -23,12 +22,12 @@ def fmt(replicates: np.ndarray) -> str:
     return f"{i['estimate']:+.3f} [{i['low']:+.3f}, {i['high']:+.3f}]"
 
 
-def agreement(rows: pd.DataFrame, outcomes: dict, alpha: float) -> pd.DataFrame:
+def agreement(rows: pd.DataFrame, outcomes: dict, alpha: float, base: str = HISTORY) -> pd.DataFrame:
     """Per project and audit rate, evaluated builds with a new failure and with a FirstFail failure, and the share of
     each that has the other, as means over seeds."""
     labels = list(outcomes["labels"])
     bit = {label: 3 * labels.index(label) for label in ("newfail", "firstfail")}
-    keep = rows[(rows["scorer"] == HISTORY) & (rows["controller"] == "online") & (rows["alpha"] == alpha)]
+    keep = rows[(rows["scorer"] == base) & (rows["controller"] == "online") & (rows["alpha"] == alpha)]
     out = []
     for (project, pi), g in keep.groupby(["project", "pi"]):
         counts = []
@@ -57,8 +56,11 @@ def main():
     parser = argparse.ArgumentParser(description="New failures as the controller's target: agreement with FirstFail, "
                                                  "escape by label, and pull-request bootstrap comparisons with "
                                                  "LatestFail+CC at equal risk")
-    parser.add_argument("--target", required=True, help="control results whose target is the new-failure label")
-    parser.add_argument("--operational", required=True, help="control results whose target is the operational label")
+    parser.add_argument("--target", nargs="+", required=True, help="control results targeting new failures")
+    parser.add_argument("--operational", nargs="+", required=True, help="control results targeting the operational "
+                                                                         "label")
+    parser.add_argument("--base", default=HISTORY, help="the order the others are compared with")
+    parser.add_argument("--orders", nargs="+", default=CHALLENGERS)
     parser.add_argument("--evaluate", nargs=2, type=float, required=True)
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--pi", type=float, default=0.1)
@@ -67,17 +69,16 @@ def main():
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     evaluate = tuple(args.evaluate)
-    runs = {"newfail": load_build_outcomes(Path(args.target), "control"),
-            "operational": load_build_outcomes(Path(args.operational), "control")}
+    runs = {"newfail": load_outcomes(args.target, "control"), "operational": load_outcomes(args.operational, "control")}
     parts = [table("Builds with a new failure and with a FirstFail failure (means over seeds)",
-                   agreement(*runs["newfail"], args.alpha))]
+                   agreement(*runs["newfail"], args.alpha, args.base))]
     for target, (rows, _) in runs.items():
         parts.append(table(f"Escape by label with the {target} target (online controller)", escapes(rows)))
     reps = {}
     for project in args.projects:
         builds, weights = project_builds(project, evaluate, args.replicates)
         for target, (rows, outcomes) in runs.items():
-            for order in [HISTORY, *CHALLENGERS]:
+            for order in [args.base, *args.orders]:
                 key = dict(project=project, scorer=order, controller="online", alpha=args.alpha, pi=args.pi)
                 if not np.logical_and.reduce([rows[k].to_numpy() == v for k, v in key.items()]).any():
                     continue
@@ -88,16 +89,15 @@ def main():
         print(project, flush=True)
     comparisons = []
     for target in runs:
-        for order in CHALLENGERS:
-            among = [p for p in args.projects if (target, order, p) in reps and (target, HISTORY, p) in reps
-                     and (order != "DANTE" or p in JAVA)]
+        for order in args.orders:
+            among = [p for p in args.projects if (target, order, p) in reps and (target, args.base, p) in reps]
             if not among:
                 continue
-            diff = {m: np.nanmean([reps[(target, order, p)][m] - reps[(target, HISTORY, p)][m] for p in among], axis=0)
-                    for m in ["work", *LABELS]}
+            diff = {m: np.nanmean([reps[(target, order, p)][m] - reps[(target, args.base, p)][m] for p in among],
+                                  axis=0) for m in ["work", *LABELS]}
             comparisons.append({"target": target, "order": order, "projects": len(among),
-                                **{f"{m} minus {HISTORY}": fmt(d) for m, d in diff.items()}})
-    parts.append(table(f"Differences to {HISTORY} at equal risk (alpha {args.alpha}, pi {args.pi}; macro, "
+                                **{f"{m} minus {args.base}": fmt(d) for m, d in diff.items()}})
+    parts.append(table(f"Differences to {args.base} at equal risk (alpha {args.alpha}, pi {args.pi}; macro, "
                        f"{args.replicates} pull-request resamples)", pd.DataFrame(comparisons)))
     Path(args.out).write_text("\n".join(parts))
     print("\n".join(parts))
