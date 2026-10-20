@@ -105,12 +105,19 @@ def ask(text: str, model: str, retries: int = 5) -> dict:
         time.sleep(2 ** attempt * 5)
 
 
-def cached_answer(suite: Suite, t: int, catalog: np.ndarray, model: str) -> dict:
+def answer_path(suite: Suite, t: int, model: str) -> Path:
     b = suite.builds.iloc[t]
-    path = (Path(os.environ["FAITHFULCUT_CACHE"]) / "llm-v1" / model / suite.project
+    return (Path(os.environ["FAITHFULCUT_CACHE"]) / "llm-v1" / model / suite.project
             / f"{lrts.build_name(b['pr_name'], b['build_id'])}.json")
+
+
+def cached_answer(suite: Suite, t: int, catalog: np.ndarray, model: str, offline: bool = False) -> dict | None:
+    """The model's saved answer for the build, else a new one; offline, None when nothing is saved."""
+    path = answer_path(suite, t, model)
     if path.exists():
         return json.loads(path.read_text())
+    if offline:
+        return None
     answer = ask(prompt(suite, t, catalog), model)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(answer))

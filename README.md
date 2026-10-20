@@ -76,6 +76,12 @@ With `per_build = true` in a configuration's `[price]` or `[control]` section, e
 python scripts/tune_budgets.py data/results/dev --out tuned_budgets.csv
 ```
 
+The hypothesis tests read the per-build outcomes of a price grid and a controller run, and report pull-request bootstrap intervals with Holm-adjusted p-values:
+
+```bash
+python scripts/report.py --price data/results/dev-full/price-main --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out report.md
+```
+
 ```bash
 python scripts/drift.py
 ```

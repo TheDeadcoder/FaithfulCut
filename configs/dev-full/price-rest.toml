@@ -1,0 +1,9 @@
+name = "dev-full/price-rest"
+evaluate = [0.2, 0.7]
+projects = ["activemq", "hadoop", "hbase", "hive", "jackrabbit-oak", "james", "karaf", "log4j", "tvm", "kafka"]
+
+[price]
+scorers = ["LatestFail", "FailCount+CC", "TF-FailFreq+CC", "TF-IDF", "DANTE-H"]
+conditions = [["full", 0.0], ["timed", 0.0], ["faithful", 0.0], ["faithful", 0.1]]
+lambdas = [0.02, 0.03, 0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.3, 0.4, 0.55, 0.7, 0.85]
+seeds = 10

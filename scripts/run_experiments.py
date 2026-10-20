@@ -22,7 +22,7 @@ def control_jobs(cfg: dict) -> list:
     c, evaluate = cfg["control"], tuple(cfg["evaluate"])
     runs = [(kind, alpha, pi) for kind in c["controllers"] for alpha in c["alphas"] for pi in c["pis"]]
     runs += [(f"fixed-{lam}", 0.0, pi) for lam in c["fixed"] for pi in c["pis"]]
-    runs += [("meta", 0.0, c["meta_pi"])]
+    runs += [("meta", 0.0, c["meta_pi"])] if "meta_pi" in c else []
     if c.get("tuned"):
         tuned = pd.read_csv(c["tuned"])
         runs += [("tuned", alpha, pi) for alpha in c["alphas"] for pi in c["pis"]]
@@ -67,7 +67,7 @@ def main():
     out = Path("data") / "results" / cfg["name"]
     out.mkdir(parents=True, exist_ok=True)
     for name, jobs in (("price", price_jobs), ("control", control_jobs)):
-        if args.only in (None, name):
+        if args.only in (None, name) and name in cfg:
             run(jobs(cfg), args.workers, name, out)
 
 

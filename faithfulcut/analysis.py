@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 LABELS = ("operational", "deconf", "firstfail", "firstfail_cold")
 HISTORY = ["LatestFail", "LatestFail+CC", "FailCount+CC", "FailCount-W+CC", "TF-FailFreq+CC", "TF-FailFreq-W+CC"]
@@ -88,7 +89,8 @@ def control_summary(control: pd.DataFrame) -> pd.DataFrame:
     )
     for col in ("width_normal", "width_adaptive", "width_worst", "updates", "pending", "lam_min", "lam_max",
                 "work_with_warmup", "verdict_hours", "full_hours", "decision_seconds", "operational_ttff_hours",
-                "operational_ttff_share", "deconf_masked_rate", "firstfail_cold_base_escape_rate"):
+                "operational_ttff_share", "deconf_masked_rate", "firstfail_cold_base_escape_rate", "audit_rate",
+                "audit_work", "escape_ht", "width_ht_normal", "width_ht_worst"):
         if col in df:
             out[col] = g[col].mean()
     return out.reset_index()
@@ -208,3 +210,54 @@ def holm(p: np.ndarray) -> np.ndarray:
 def build_clusters(builds: pd.DataFrame, by: str) -> np.ndarray:
     """Cluster of each build for the bootstrap: its pull request, or the week it started in."""
     return builds["pr_name"].to_numpy() if by == "pr" else (builds["start"].to_numpy() // (7 * 86400)).astype(int)
+
+
+def ranking_flips(means: pd.DataFrame, label: str = "operational", work: float = 0.2) -> pd.DataFrame:
+    """Per project and for the macro means, how the orders' escape ranking under FULL compares with FAITHFUL (no
+    audits) at matched work: Kendall's tau and the pairs of orders whose ranking flips."""
+    m = means[(means["work"] == work) & (means["pi"] == 0.0) & means["regime"].isin(["full", "faithful"])]
+    table = m.pivot_table(index=["project", "scorer"], columns="regime", values=f"{label}_escape_rate").dropna()
+    complete = table.groupby("scorer").size()
+    macro = table[table.index.get_level_values("scorer").isin(complete[complete == complete.max()].index)]
+    groups = [(p, g.droplevel(0)) for p, g in table.groupby(level=0)] + [("macro", macro.groupby(level=1).mean())]
+    out = []
+    for project, g in groups:
+        names = g.index.tolist()
+        flips = [f"{a} / {b}" for i, a in enumerate(names) for b in names[i + 1:]
+                 if (g.loc[a, "full"] - g.loc[b, "full"]) * (g.loc[a, "faithful"] - g.loc[b, "faithful"]) < 0]
+        tau = stats.kendalltau(g["full"], g["faithful"]).statistic if len(g) > 2 else np.nan
+        out.append({"project": project, "orders": len(g), "tau": tau, "flips": len(flips),
+                    "pairs": len(names) * (len(names) - 1) // 2, "flipped": "; ".join(flips)})
+    return pd.DataFrame(out)
+
+
+def project_builds(project: str, evaluate: tuple[float, float], replicates: int = 1000,
+                   seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    """The project's evaluated builds and pull-request cluster bootstrap weights over them."""
+    from faithfulcut.suite import load_suite
+
+    suite = load_suite(project, later=evaluate[1] > 1)
+    position = suite.builds["position"].to_numpy()
+    builds = np.flatnonzero((position >= evaluate[0]) & (position < evaluate[1]))
+    return builds, cluster_weights(build_clusters(suite.builds.iloc[builds], "pr"), replicates, seed)
+
+
+def matched_replicates(rows: pd.DataFrame, outcomes: dict, builds: np.ndarray, weights: np.ndarray, label: str,
+                       work: float = 0.2, **keys) -> np.ndarray:
+    """Bootstrap replicates of a price-grid condition's escape rate at matched executed work."""
+    _, rate, executed = replicate_rates(condition_sums(rows, outcomes, label, **keys), builds, weights)
+    return at_matched_work(rate, executed, work)
+
+
+def control_replicates(rows: pd.DataFrame, outcomes: dict, builds: np.ndarray, weights: np.ndarray, label: str,
+                       **keys) -> tuple[np.ndarray, np.ndarray]:
+    """Bootstrap replicates of a controller run's escape rate and executed share of test time."""
+    _, rate, executed = replicate_rates(condition_sums(rows, outcomes, label, **keys), builds, weights)
+    return rate[0], executed[0]
+
+
+def interval(replicates: np.ndarray) -> dict[str, float]:
+    """Point estimate (first replicate) and 95% percentile interval."""
+    boot = replicates[1:][~np.isnan(replicates[1:])]
+    low, high = np.percentile(boot, [2.5, 97.5]) if len(boot) else (np.nan, np.nan)
+    return {"estimate": float(replicates[0]), "low": float(low), "high": float(high)}

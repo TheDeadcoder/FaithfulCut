@@ -6,7 +6,7 @@ import pytest
 from synthetic import make_suite, random_suite
 
 from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cluster_weights, compare,
-                                  condition_sums, energy, holm, replicate_rates, tuned_budgets)
+                                  condition_sums, energy, holm, ranking_flips, replicate_rates, tuned_budgets)
 from faithfulcut.control import FixedCut
 from faithfulcut.experiments import make_controller, summarize
 from faithfulcut.labels import cold_rows
@@ -162,3 +162,17 @@ def test_builds_skipping_most_change_relevance_are_flagged_for_review():
     rep = replay(s, "full", qtf, lam=0.2, warmup=0.0, signal=lambda t, depth, lam: 0.9 if t == 1 else 0.1)
     out = summarize(s, rep, {"x": label}, np.array([False, True]))
     assert out["flagged"] == 1 and out["x_flagged_escape"] == 1 and out["audit_rate"] == 0.0
+
+
+def test_ranking_flips_count_pairs_that_change_order():
+    rows = []
+    for project, values in (("p", {"a": (0.1, 0.3), "b": (0.2, 0.2), "c": (0.3, 0.4)}),
+                            ("q", {"a": (0.1, 0.1), "b": (0.2, 0.2), "c": (0.3, 0.3)})):
+        for scorer, (full, faithful) in values.items():
+            for regime, value in (("full", full), ("faithful", faithful)):
+                rows.append({"project": project, "scorer": scorer, "regime": regime, "pi": 0.0, "work": 0.2,
+                             "operational_escape_rate": value})
+    flips = ranking_flips(pd.DataFrame(rows)).set_index("project")
+    assert flips.loc["p", "flips"] == 1 and flips.loc["p", "flipped"] == "a / b"
+    assert flips.loc["q", "flips"] == 0 and flips.loc["q", "tau"] == pytest.approx(1.0)
+    assert flips.loc["macro", "orders"] == 3
