@@ -74,6 +74,12 @@ python scripts/analyze.py data/results/dev
 python scripts/drift.py
 ```
 
+The change-based scores are precomputed for replay speed; their per-build computing time is measured separately on consecutive dev builds:
+
+```bash
+python scripts/time_selectors.py
+```
+
 The LLM relevance pilot keeps every response in `FAITHFULCUT_CACHE`. It authenticates with `GEMINI_API_KEY` when set, and otherwise with Application Default Credentials on the Google Cloud project in `GOOGLE_CLOUD_PROJECT` (location `GOOGLE_CLOUD_LOCATION`, default `global`):
 
 ```bash

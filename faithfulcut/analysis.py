@@ -1,18 +1,26 @@
 import numpy as np
 import pandas as pd
 
-LABELS = ("operational", "deconf", "firstfail")
+LABELS = ("operational", "deconf", "firstfail", "firstfail_cold")
 HISTORY = ["LatestFail", "LatestFail+CC", "FailCount+CC", "FailCount-W+CC", "TF-FailFreq+CC", "TF-FailFreq-W+CC"]
 PRICE_KEYS = ["project", "scorer", "regime", "pi", "seed"]
 CONTROL_KEYS = ["project", "scorer", "controller", "alpha", "pi"]
+WATTS = (10.0, 300.0)
+GRAMS_CO2E_PER_KWH = (20.0, 700.0)
+
+
+def _labels(df: pd.DataFrame) -> list[str]:
+    return [label for label in LABELS if f"{label}_faulty" in df]
 
 
 def rates(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    for label in LABELS:
+    for label in _labels(out):
         faulty = out[f"{label}_faulty"].replace(0, np.nan)
         out[f"{label}_escape_rate"] = out[f"{label}_executed_escape"] / faulty
         out[f"{label}_base_escape_rate"] = out[f"{label}_escape"] / faulty
+        if f"{label}_masked" in out:
+            out[f"{label}_masked_rate"] = out[f"{label}_masked"] / faulty
         out[f"{label}_audited_rate"] = out[f"{label}_audited_escape"] / out[f"{label}_audited"].replace(0, np.nan)
         out[f"{label}_recall"] = out[f"{label}_rows_selected"] / out[f"{label}_rows"].replace(0, np.nan)
     return out
@@ -21,7 +29,7 @@ def rates(df: pd.DataFrame) -> pd.DataFrame:
 def at_work(price: pd.DataFrame, targets=(0.1, 0.2, 0.3)) -> pd.DataFrame:
     """Executed escape and test recall interpolated at matched executed work, per replay group and seed."""
     df = rates(price)
-    metrics = [f"{label}_{m}" for label in LABELS for m in ("escape_rate", "recall")]
+    metrics = [f"{label}_{m}" for label in _labels(df) for m in ("escape_rate", "recall")]
     rows = []
     for key, g in df.groupby(PRICE_KEYS):
         g = g.sort_values("work")
@@ -76,7 +84,21 @@ def control_summary(control: pd.DataFrame) -> pd.DataFrame:
         deconf=("deconf_base_escape_rate", "mean"), firstfail=("firstfail_base_escape_rate", "mean"),
         work=("work", "mean"), forced=("forced", "mean"),
     )
-    for col in ("width_normal", "width_adaptive", "width_worst", "updates", "pending", "lam_min", "lam_max"):
+    for col in ("width_normal", "width_adaptive", "width_worst", "updates", "pending", "lam_min", "lam_max",
+                "work_with_warmup", "verdict_hours", "full_hours", "decision_seconds", "operational_ttff_hours",
+                "operational_ttff_share", "deconf_masked_rate", "firstfail_cold_base_escape_rate"):
         if col in df:
             out[col] = g[col].mean()
     return out.reset_index()
+
+
+def energy(test_hours: float) -> dict[str, float]:
+    """Energy and emissions of test time over the stated ranges of executor power and grid intensity."""
+    kwh = [test_hours * w / 1000 for w in WATTS]
+    return {"kwh_low": kwh[0], "kwh_high": kwh[1], "kg_co2e_low": kwh[0] * GRAMS_CO2E_PER_KWH[0] / 1000,
+            "kg_co2e_high": kwh[1] * GRAMS_CO2E_PER_KWH[1] / 1000}
+
+
+def break_even_hours(overhead_seconds: float, work: float) -> float:
+    """Full-suite test time per build at which the test time a selection saves pays for the selector's own time."""
+    return overhead_seconds / 3600 / (1 - work) if work < 1 else np.inf

@@ -5,7 +5,8 @@ import numpy as np
 from faithfulcut import dante
 from faithfulcut.control import FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, max_pending, transfer_widths
 from faithfulcut.ir import load_ir
-from faithfulcut.labels import load_operational, transfer
+from faithfulcut.metrics import first_failure_time
+from faithfulcut.labels import cold_rows, load_operational, transfer
 from faithfulcut.replay import replay
 from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers
 from faithfulcut.suite import Suite, load_suite
@@ -19,6 +20,7 @@ def setup(project: str, seed: int, evaluate: tuple[float, float]):
     rows = suite.offsets[-1]
     labels = {"operational": load_operational(full, seed)[:rows]}
     labels.update({k: v[:rows] for k, v in transfer(full).items()})
+    labels["firstfail_cold"] = labels["firstfail"] & cold_rows(suite)
     scorers = {**history_scorers(suite), **ir_scorers(suite, load_ir(full, "seen"))}
     scorers.update(hybrid_scorers(scorers["LatestFail+CC"], scorers["TF-IDF+CC"]))
     if project in dante.PROJECTS:
@@ -32,32 +34,45 @@ def available(project: str, scorer: str) -> bool:
     return not scorer.startswith("DANTE") or project in dante.PROJECTS
 
 
-def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray) -> dict:
-    """Test work and, per label, faulty builds, escapes and selected failing rows over the evaluated builds."""
+def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray, timing: bool = False) -> dict:
+    """Test work, feedback time and selector time and, per label, faulty builds, escapes, escapes masked by another
+    selected failure and selected failing rows over the evaluated builds; `timing` adds the time to first failure."""
     of_row = suite.build_of_rows()
     n = len(suite.builds)
     full_run = rep.audited | rep.forced
     coin = rep.audited & (rep.reason != 1)
+    with_warmup = evaluate | (rep.reason == 1)
     out = {
         "builds": int(evaluate.sum()),
         "work": rep.executed_cost[evaluate].sum() / rep.full_cost[evaluate].sum(),
         "base_work": rep.base_cost[evaluate].sum() / rep.full_cost[evaluate].sum(),
+        "work_with_warmup": rep.executed_cost[with_warmup].sum() / rep.full_cost[with_warmup].sum(),
         "forced": int((rep.forced & evaluate).sum()),
         "lam_median": float(np.median(rep.lam[evaluate])),
+        "verdict_hours": rep.executed_cost[evaluate].mean() / 3600,
+        "full_hours": rep.full_cost[evaluate].mean() / 3600,
+        "decision_seconds": rep.seconds[evaluate].mean(),
     }
     for name, label in labels.items():
         faulty = (np.bincount(of_row, weights=label, minlength=n) > 0) & evaluate
         caught = np.bincount(of_row, weights=label & rep.selected, minlength=n) > 0
+        other = np.bincount(of_row, weights=suite.failed & ~label & rep.selected, minlength=n) > 0
         rows = label & evaluate[of_row]
         out.update({
             f"{name}_faulty": int(faulty.sum()),
             f"{name}_escape": int((faulty & ~caught).sum()),
             f"{name}_executed_escape": int((faulty & ~caught & ~full_run).sum()),
+            f"{name}_masked": int((faulty & ~caught & other).sum()),
             f"{name}_audited": int((faulty & coin).sum()),
             f"{name}_audited_escape": int((faulty & coin & ~caught).sum()),
             f"{name}_rows": int(rows.sum()),
             f"{name}_rows_selected": int((rows & rep.selected).sum()),
         })
+        if timing:
+            ttff = first_failure_time(suite, rep, label, faulty)
+            found = ~np.isnan(ttff)
+            out[f"{name}_ttff_hours"] = ttff[found].mean() / 3600 if found.any() else np.nan
+            out[f"{name}_ttff_share"] = (ttff[found] / rep.full_cost[found]).mean() if found.any() else np.nan
     return out
 
 
@@ -96,7 +111,7 @@ def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, 
     rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels["operational"],
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"))
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
-           **summarize(suite, rep, labels, mask)}
+           **summarize(suite, rep, labels, mask, timing=True)}
     if isinstance(cut, OnlineCut):
         of_row = suite.build_of_rows()
         faulty = np.bincount(of_row, weights=labels["operational"], minlength=len(suite.builds)) > 0
