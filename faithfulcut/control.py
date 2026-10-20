@@ -144,6 +144,23 @@ class Monitor:
         return False
 
 
+class Cusum:
+    """Bernoulli CUSUM on audited losses: alarm when the log-likelihood ratio of a miss rate `ratio` times alpha
+    against alpha, accumulated while it stays positive, exceeds `h`; it restarts after each alarm."""
+
+    def __init__(self, alpha: float, ratio: float = 3.0, h: float = 5.0):
+        self.up = math.log(ratio)
+        self.down = math.log((1 - ratio * alpha) / (1 - alpha))
+        self.h, self.s = h, 0.0
+
+    def update(self, loss: float) -> bool:
+        self.s = max(0.0, self.s + (self.up if loss else self.down))
+        if self.s > self.h:
+            self.s = 0.0
+            return True
+        return False
+
+
 def online_slack(eta: float, updates: int, pending: int) -> float:
     """Long-run bound on |mean audited loss - alpha| for the online cut started in [0, 1]."""
     return (1 + eta) / (eta * updates) + 2 * pending / updates

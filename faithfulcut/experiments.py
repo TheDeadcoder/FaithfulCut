@@ -3,7 +3,7 @@ from functools import cache, lru_cache
 import numpy as np
 
 from faithfulcut import dante
-from faithfulcut.control import (FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, ht_widths, max_pending,
+from faithfulcut.control import (Cusum, FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, ht_widths, max_pending,
                                  transfer_widths)
 from faithfulcut.ir import is_test_source, load_ir, lrts_pattern
 from faithfulcut.metrics import first_failure_time, hidden_latency
@@ -182,9 +182,12 @@ def price_task(project: str, scorer: str, regime: str, pi: float, seed: int, lam
 
 def make_controller(kind: str, alpha: float, cfg: dict, project: str = "", scorer: str = ""):
     """The cut, its feedback mode, its monitor and its size cap for one controller kind; "tuned" is the fixed budget
-    tuned on the dev split for the project, order and alpha."""
+    tuned on the dev split for the project, order and alpha. The online cut's monitor is a CUSUM when the config's
+    `monitor` says "cusum"."""
     if kind == "online":
-        return OnlineCut(alpha, cfg["eta"]), "audits", Monitor(alpha), cfg["cap"]
+        monitor = Cusum(alpha, cfg.get("cusum_ratio", 3.0), cfg.get("cusum_h", 5.0)) \
+            if cfg.get("monitor") == "cusum" else Monitor(alpha)
+        return OnlineCut(alpha, cfg["eta"]), "audits", monitor, cfg["cap"]
     if kind == "oracle":
         return OnlineCut(alpha, cfg["eta"]), "all", None, np.inf
     if kind == "split":
