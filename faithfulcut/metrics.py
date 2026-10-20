@@ -1,3 +1,5 @@
+import heapq
+
 import numpy as np
 
 from faithfulcut.replay import Replay
@@ -49,9 +51,9 @@ def first_failure_time(suite: Suite, rep: Replay, label: np.ndarray, builds: np.
     return out
 
 
-def hidden_latency(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndarray) -> tuple[int, float]:
-    """Labeled failing rows of `builds` that did not run, and the mean number of builds until their class next runs;
-    rows whose class never runs again are left out of the mean."""
+def hidden_latency(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndarray) -> tuple[int, float, float]:
+    """Labeled failing rows of `builds` that did not run, and the mean number of builds and of hours until their class
+    next runs; rows whose class never runs again are left out of the means."""
     n = len(suite.builds)
     of_row = suite.build_of_rows()
     executed = rep.executed(suite)
@@ -60,5 +62,32 @@ def hidden_latency(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndar
     i = np.searchsorted(runs, suite.cls[hidden].astype(np.int64) * n + of_row[hidden], side="right")
     found = i < len(runs)
     found[found] = runs[i[found]] // n == suite.cls[hidden][found]
-    later = runs[i[found]] % n - of_row[hidden][found]
-    return len(hidden), float(later.mean()) if len(later) else np.nan
+    later = runs[i[found]] % n
+    start = suite.builds["start"].to_numpy()
+    hours = (start[later] - start[of_row[hidden][found]]) / 3600
+    return len(hidden), float((later - of_row[hidden][found]).mean()) if len(later) else np.nan, \
+        float(hours.mean()) if len(later) else np.nan
+
+
+def escape_causes(suite: Suite, rep: Replay, label: np.ndarray, builds: np.ndarray,
+                  observed: np.ndarray) -> dict[str, int]:
+    """Escaped faulty builds among `builds`, by why the selection missed them: "new" when none of the failing classes
+    had failed in a build finished before the start, "seen" when one had and the replay observed that failure (rows
+    in `observed`), "hidden" when such failures exist but went unobserved."""
+    start, finish = suite.builds["start"].to_numpy(), suite.builds["finish"].to_numpy()
+    failed_before = np.zeros(len(suite.names), dtype=bool)
+    seen_before = np.zeros(len(suite.names), dtype=bool)
+    out = {"new": 0, "seen": 0, "hidden": 0}
+    pending = []
+    for t in range(len(start)):
+        while pending and pending[0][0] <= start[t]:
+            rows = suite.rows(heapq.heappop(pending)[1])
+            fail = suite.failed[rows]
+            failed_before[suite.cls[rows][fail]] = True
+            seen_before[suite.cls[rows][fail & observed[rows]]] = True
+        rows = suite.rows(t)
+        failing = suite.cls[rows][label[rows]]
+        if builds[t] and len(failing) and not (label[rows] & rep.selected[rows]).any():
+            out["seen" if seen_before[failing].any() else "hidden" if failed_before[failing].any() else "new"] += 1
+        heapq.heappush(pending, (finish[t], t))
+    return out

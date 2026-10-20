@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from synthetic import make_suite, perturb, random_suite
 
-from faithfulcut.metrics import hidden_latency
+from faithfulcut.metrics import escape_causes, hidden_latency
 from faithfulcut.replay import REGIMES, audit_coins, replay
 from faithfulcut.scorers import qtf
 
@@ -134,7 +134,16 @@ def test_rotation_runs_the_stalest_classes_within_its_budget():
 def test_hidden_failures_wait_until_their_class_runs_again():
     s = three_classes({1: [0], 3: [0]}, 4)
     rep = replay(s, "faithful", qtf, lam=0.0, warmup=0.0, schedule=2)
-    assert hidden_latency(s, rep, s.failed, np.ones(4, dtype=bool)) == (2, 1.0)
+    n, builds, hours = hidden_latency(s, rep, s.failed, np.ones(4, dtype=bool))
+    assert (n, builds) == (2, 1.0) and hours == pytest.approx(10 / 3600)
+
+
+def test_escapes_are_new_seen_or_hidden_by_what_the_replay_observed():
+    s = three_classes({0: [0], 1: [0], 2: [1], 3: [1]}, 4)
+    rep = replay(s, "faithful", qtf, lam=0.0, warmup=0.0)
+    every = np.ones(4, dtype=bool)
+    assert escape_causes(s, rep, s.failed, every, rep.executed(s)) == {"new": 1, "seen": 1, "hidden": 1}
+    assert escape_causes(s, rep, s.failed, every, np.ones(len(s.cls), dtype=bool)) == {"new": 1, "seen": 2, "hidden": 0}
 
 
 def by_index(history, t):
