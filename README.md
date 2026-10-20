@@ -1,197 +1,100 @@
 # FaithfulCut
 
-FaithfulCut replays commit-aware test selection on real long-running CI test suites. Each component sees only the feedback it would have in deployment: outcomes of tests it ran or audited, and only after their builds finished. The study measures what selection saves and risks under that feedback, and calibrates the selection cut from random full-suite audits.
+Continuous integration runs a project's whole test suite on every change, and for large projects that takes hours. Running only the tests a change is likely to break saves most of that time. But a selector can skip a failing test, it has to keep working as the code and its tests change, and it has to save more than it costs to run. FaithfulCut studies how to select tests per commit under those constraints, and how to measure selectors the way they would actually run.
+
+## The idea
+
+Most evaluations of test selection replay a project's CI history and let the selector read the outcome of every earlier test run. A deployed selector never has that: it learns a test's outcome only if it ran the test, and only once the build has finished. FaithfulCut replays history under three information regimes:
+
+- **FULL**: the outcomes of every build that started earlier, as most replays assume.
+- **TIMED**: the outcomes of builds that have finished.
+- **FAITHFUL**: the outcomes of the tests the selector ran, in builds that have finished.
+
+The gap between FULL and FAITHFUL is the *price of information*: how much a conventional replay flatters a selector.
+
+To bound the risk of skipping failures, FaithfulCut runs the whole suite on a small random share of builds. These audits let an online controller adjust how much of each suite to run, so that the *escape rate*, the share of failing builds whose failures the selection misses, stays at a chosen target. The same audits give a confidence bound on that rate, computed only from what the deployment sees.
+
+## What was evaluated
+
+**Data.** Ten open-source projects with long-running test suites, from the LRTS dataset: ActiveMQ, Hadoop, HBase, Hive, Jackrabbit Oak, James, Kafka, Karaf, Log4j and TVM. They contribute 21,255 builds (57,437 CI runs), followed by 13,389 later builds. Three public industrial CI logs, Paint Control and IOF/ROL from ABB Robotics and GSDTSR from Google, replicate the central measurement.
+
+**Selectors.**
+- History: most recently failed first (LatestFail), most often failed first (FailCount) and co-failure with the changed files (TF-FailFreq), each also in a cost-aware form (+CC).
+- Duration: quickest test first (QTF).
+- Change content: the TF-IDF relevance of the change's diff to each test's sources (TF-IDF, TF-IDF+CC).
+- Structure: distance in the module dependency graph, and directory distance.
+- Combinations: fusions of history with content (Hybrid, Hybrid-RRF), and DANTE's published scorer.
+- Learned: a gradient-boosted failure model, and an LLM that reads the diff.
+
+**Experiments.**
+- The price of information for every selector at equal test time, split into feedback delay and censoring, and its effect on how selectors rank.
+- Risk control: the online controller against fixed budgets, conformal and PAC calibration, and periodic recalibration. It was run at several audit rates and with audits steered by the change, and the coverage of its confidence bounds was measured.
+- Failure labels: operational failures with known flaky tests excluded, first failures, and failures of tests never seen failing.
+- Where the extra misses come from, and how long failures stay hidden.
+- Buying information back with scheduled full runs and rotation of the stalest tests.
+- Budgets set by the change's relevance, and a filter for changes that touch only documentation or tests.
+- Drift: injected test renames, failure bursts and slowdowns, and detectors for them.
+- Cost: net savings after audits and the selector's own time, in test-hours, energy and money.
+
+**Design.** Every design choice was made on a development split. Hypotheses and analyses were written down, in `PREREGISTRATION.md` and `PREREGISTRATION-B.md`, before the held-out builds and the later builds were evaluated. Intervals come from resampling whole pull requests, with Holm correction.
+
+## Findings
+
+Unless stated otherwise, escape rates are compared at 20% of test time.
+
+- **Full-information replays flatter history-based selection.**
+  - LatestFail+CC's escape rate is 1.32 times higher under FAITHFUL than under FULL on the held-out builds, and 2.98 times higher on the later builds. DANTE's is 1.45 and 2.34 times higher.
+  - On the industrial logs, the share of failing verdicts LatestFail misses is 1.04 times higher.
+  - Feedback delay contributes almost nothing; the price comes from the outcomes of tests the selector never ran.
+- **Reading the change is immune.** TF-IDF ordering pays no price: 0.97 and 1.01 times.
+- **Faithful evaluation can reverse rankings.** On the five projects with the most later builds, a learned failure model escapes more often than LatestFail+CC under FULL (0.186 against 0.089). Under FAITHFUL it escapes least often of four selectors (0.172 against 0.283).
+- **Audits hold the risk where it is set.** With the whole suite run on 10% of builds, the online controller kept the escape rate closer to its 10% target than a budget tuned on development data: on the held-out builds, its mean gap to the target was 0.008 against 0.040. Its confidence bound covered the true rate in every seed.
+- **Selection pays for itself.**
+  - After audits and its own computing time, selection saves 28–66% of test time on Hive, James and Kafka.
+  - On the later builds, LatestFail+CC and Hybrid-RRF each save about 8,400 test-hours per 1,000 builds for an average project.
+  - Matching the protection a full-information replay reports takes LatestFail+CC about 3,900 more test-hours per 1,000 builds, and TF-IDF+CC about 300.
+- **What is certified decides which selector is cheapest.** On the later builds, certified on failures of tests never seen failing, Hybrid-RRF needs 9.5 percentage points less test time than LatestFail+CC at the same risk. Reading the change needs 7.7 points less than following the module graph.
+- **Scheduled full runs repair history.** On the later builds, a full run every 8 builds lowers LatestFail+CC's escape rate by 14.8 points at the same selection budget.
+- **An LLM adds little to TF-IDF.** Gemini 3.5 Flash-Lite put a first-failing test within the first 5% of predicted test time in 84.1% of builds, against 81.9% for TF-IDF+CC.
+- **A reference loader for the industrial logs gives full information.** In RETECS, each test's precomputed result history reaches the selector, including results of runs the selector skipped.
+
+## Repository
+
+| Path | Contents |
+| --- | --- |
+| `faithfulcut/` | Replay engine, selectors, controllers, failure labels and statistics |
+| `scripts/` | Data preparation, the experiment runner, analyses and reports |
+| `configs/` | Experiment configurations for the development, held-out and later builds |
+| `tests/` | Unit tests; leak tests, which check that a FAITHFUL selector's decisions never depend on outcomes it did not observe; and checks that pinned inputs and registered configurations are unchanged |
 
 ## Setup
 
-Python 3.11 or later.
+Python 3.11 or later:
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
 
-## Inputs
-
-The study uses the LRTS dataset of long-running test suites.
+The experiments read the LRTS dataset. Set three environment variables:
 
 | Variable | Points to |
 | --- | --- |
-| `LRTS_REPO` | A clone of [LRTS](https://github.com/lrtsuser/LRTS) checked out at commit `2c1b68e9b1d4ec6c4f304869e36af2e3168da889` |
-| `LRTS_DIR` | The `long_running_test_suites` folder unpacked from the processed LRTS release (`long_running_test_suites.zip`, linked from the LRTS README, SHA-256 `49ab497ce43b1706a7f8d340859c602be6adbcc1996cd81d0438523209cb9d6c`) |
-| `FAITHFULCUT_CACHE` | Optional. A writable folder for derived data, such as per-project suites, which are built from the inputs on first use |
-| `DANTE_DIR` | Optional. The parts of DANTE's replication package that `scripts/fetch_dante.py` fetches |
+| `LRTS_REPO` | A clone of [LRTS](https://github.com/lrtsuser/LRTS) at the commit pinned in `tests/test_lrts.py` |
+| `LRTS_DIR` | The `long_running_test_suites` folder from LRTS's processed release |
+| `FAITHFULCUT_CACHE` | A writable folder for derived data |
 
-The runs studied are those listed in `$LRTS_REPO/artifact/metadata/dataset.csv`. Its SHA-256 is `49570f8dca753c385f25346f8aaaded3a841b0e67dabf36fbb67260a79b02987`.
-
-When both variables are set, `pytest` also checks the pinned inputs and the consistency of the data.
-
-Operational failure labels need the creation times of the issues in LRTS's flaky-test list. Fetch them once into `FAITHFULCUT_CACHE` from the public JIRA and GitHub APIs:
+With them set, `pytest` also checks the inputs. Build the derived data once:
 
 ```bash
 python scripts/fetch_flaky_issues.py
-```
-
-TF-IDF relevance reads test sources from bare clones of the ten upstream repositories, also kept in `FAITHFULCUT_CACHE`:
-
-```bash
 python scripts/clone_repos.py
-```
-
-```bash
 python scripts/build_ir.py
-```
-
-DANTE's scorer is ported from its MIT-licensed replication package ([Zenodo record 18900675](https://zenodo.org/records/18900675)). This fetches the package's code, paper, published prioritization results and sample processed builds (about 13 MB of the 3.6 GB archive) into a new folder. With `DANTE_DIR` set to that folder, `pytest` also checks the port against DANTE's own outputs:
-
-```bash
-python scripts/fetch_dante.py <folder>
-```
-
-DANTE's relevance scores for its nine Java projects are computed once into `FAITHFULCUT_CACHE`:
-
-```bash
 python scripts/build_dante.py
-```
-
-The structural orders rank tests by module distance and by path distance from the build's changed files. Module distance follows the module graph at the build's base commit, read from its `pom.xml` files or Kafka's root `build.gradle`. Both are computed once into `FAITHFULCUT_CACHE`:
-
-```bash
-python scripts/build_structure.py
-```
-
-## Experiments
-
-Labels for every audit seed are computed once, then each configuration runs in parallel. Results go to `data/results/<name>`.
-
-```bash
 python scripts/build_labels.py
-```
-
-```bash
-python scripts/run_experiments.py configs/dev.toml
-```
-
-```bash
-python scripts/analyze.py data/results/dev
-```
-
-With `per_build = true` in a configuration's `[price]` or `[control]` section, each evaluated build's outcome is also saved to `<section>_builds.npz`; the bootstrap helpers in `faithfulcut.analysis` resample those outcomes by pull request or by week. Fixed budgets tuned on a dev price grid are written once, and a `[control]` section's `tuned` entry points to the file:
-
-```bash
-python scripts/tune_budgets.py data/results/dev --out tuned_budgets.csv
-```
-
-The registered tests and tables read the per-build outcomes of the price grids and the main controller run, and report pull-request bootstrap intervals with Holm-adjusted p-values, as markdown and JSON:
-
-```bash
-python scripts/report.py --price data/results/dev-full/price-main data/results/dev-full/price-rest --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/core.md
-```
-
-`PREREGISTRATION.md` fixes the hypotheses, settings and analysis for the held-out builds. One command runs every registered configuration on the confirmatory split, then the report:
-
-```bash
-python scripts/run_core.py
-```
-
-`PREREGISTRATION-B.md` adds arms for the later builds: the new-failure target, structural orders, the relevance threshold and path filter, repair, and the learned orders, with their configurations in `configs/later-b` and their tests in `scripts/report_b.py`. Its running section lists the commands.
-
-```bash
-python scripts/drift.py
-```
-
-A controller can instead target new failures, failures of classes never seen failing in a finished warm-up or audited build, with `target = "newfail"` in its `[control]` section. Every control run also reports escapes on that label. This compares the two targets:
-
-```bash
-python scripts/new_failures.py --target data/results/dev-full/control-newfail --operational data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/new-failures.md
-```
-
-The module set, meaning the changed modules and every module depending on them, also runs as a fixed selector at its natural operating point:
-
-```bash
-python scripts/module_set.py --evaluate 0.2 0.7 --out data/results/dev-full/module-set.md
-```
-
-Two more ways to see what a selector skips can be added alongside random audits:
-- scheduled full runs every k builds: `schedules` in a price grid, or `schedule` in a `[control]` section;
-- stalest-first rotation within a share of the predicted suite cost: `rotations`, or `rotate`.
-
-With `latency = true`, a run also records how many builds a skipped failure stays unseen. This compares the three at equal extra cost:
-
-```bash
-python scripts/information_repair.py --repair data/results/dev-full/price-repair --full data/results/dev-full/price-main --control data/results/dev-full/control-repair* --out data/results/dev-full/information-repair.md
-```
-
-Two options change how much a build tests. With `threshold = true`, the cut covers a share of the change's TF-IDF relevance mass instead of a share of predicted test time; λ is then -log of the uncovered share. With `path_filter = true`, a change that touches only documentation and test sources runs just its changed and new tests. This compares a variant's results with a baseline's for the same orders:
-
-```bash
-python scripts/compare_variants.py --kind control --variant data/results/dev-full/control-threshold --baseline data/results/dev-full/control-main --orders TF-IDF+CC Hybrid-RRF --evaluate 0.2 0.7 --out data/results/dev-full/threshold-control.md
-```
-
-Drift can be injected into the replays to see how the controller and its monitor react. A `[drift]` section names the kinds, the injection position and the horizon. The kinds are `rename`, `burst` and `slow`, each with an optional severity such as `burst:10`:
-
-```bash
-python scripts/run_experiments.py configs/dev-full/drift.toml
-```
-
-```bash
-python scripts/drift_injection.py data/results/dev-full/drift --out data/results/dev-full/drift.md
-```
-
-Real renames of test sources in each project's history are counted with:
-
-```bash
-python scripts/count_renames.py
-```
-
-A price grid with `anatomy = true` splits each escape by cause (a new failure, a repeat whose earlier failure the replay observed, or one whose earlier failure it did not) and records the share of selected test time spent on failures outside DeConf. This reports why history orders lose, across budgets:
-
-```bash
-python scripts/why_history.py --price data/results/dev-full/price-main data/results/dev-full/price-rest --anatomy data/results/dev-full/price-anatomy --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/why-history.md
-```
-
-`Learned+CC` is a learned order in the style of predictive test selection: a gradient-boosted failure model on change relevance, co-failures, failure history, staleness and duration, refit on the latest observed builds and ordering classes by predicted failure probability per predicted second. `Learned-W+CC` weights each training outcome by its audit propensity, as the -W orders do. Each replay trains its own model from scratch. This compares them with the heuristic orders under each regime and under the online controller:
-
-```bash
-python scripts/learned_selector.py --price data/results/dev-full/price-main data/results/dev-full/price-learned data/results/dev-full/price-learned-w --control data/results/dev-full/control-main data/results/dev-full/control-learned --evaluate 0.2 0.7 --out data/results/dev-full/learned.md
-```
-
-H7 replays three industrial CI logs in RETECS's format: Paint Control and IOF/ROL from ABB Robotics, and GSDTSR from Google. They are published in the [atcs-data repository](https://bitbucket.org/HelgeS/atcs-data), and the H7 script compares FULL with FAITHFUL on them:
-
-```bash
-python scripts/industrial.py --logs paintcontrol.csv iofrol.csv gsdtsr.csv --coverage paintcontrol.csv iofrol.csv --out data/results/industrial/h7.md
-```
-
-The registered report then takes its result into the primary family with `--industrial data/results/industrial/h7.json`.
-
-The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
-
-```bash
+python scripts/build_structure.py
 python scripts/build_later.py
-```
-
-The change-based scores are precomputed for replay speed; their per-build computing time is measured separately on consecutive dev builds:
-
-```bash
 python scripts/time_selectors.py
 ```
 
-The cost ledger turns the online controller's net saving, audits and selector time included, into test-hours, energy, emissions and runner cost per 1,000 builds. Energy uses Cloud Carbon Footprint's AWS compute and memory coefficients with its PUE, emissions Ember's global average grid intensity, and cost GitHub's price for Linux runners, from a 2-core executor at half load to an 8-core one at full load. The ledger also reports feedback time and the extra test time FAITHFUL needs to match FULL's escape at 20% work:
-
-```bash
-python scripts/cost.py --price data/results/confirmatory/price-main --control data/results/confirmatory/control-main --evaluate 0.7 1.0 --out data/results/confirmatory/cost.md
-```
-
-The LLM relevance pilot keeps every response in `FAITHFULCUT_CACHE` as soon as it arrives, so a rerun asks only the builds without one. Dropped connections, timeouts, rate limits and server errors are retried with growing pauses, for up to 30 minutes per request. It authenticates with `GEMINI_API_KEY` when set, and otherwise with Application Default Credentials on the Google Cloud project in `GOOGLE_CLOUD_PROJECT` (location `GOOGLE_CLOUD_LOCATION`, default `global`):
-
-```bash
-python scripts/llm_pilot.py
-```
-
-H8 asks Flash-Lite about every confirmatory build with a FirstFail failure whose failing classes are in its catalog, and compares the recall of its risk order at 5% of predicted test time with TF-IDF+CC's. `--dry-run` only counts the builds and prompt sizes. `--shuffled` adds the registered control, which shows each build another confirmatory build's diff:
-
-```bash
-python scripts/llm_recall.py --out data/results/llm/h8.md
-```
-
-The registered report then takes its result into the primary family with `--llm data/results/llm/h8.json`.
+`python scripts/run_core.py` runs the held-out evaluation and its report. `PREREGISTRATION.md` and `PREREGISTRATION-B.md` list the commands for the later builds, and any configuration runs with `python scripts/run_experiments.py <config>`. The industrial replication reads the logs published in [atcs-data](https://bitbucket.org/HelgeS/atcs-data). The LLM ranking needs access to Gemini on Google Cloud.
