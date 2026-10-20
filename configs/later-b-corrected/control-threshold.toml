@@ -1,0 +1,19 @@
+name = "later-b/control-threshold-cap"
+evaluate = [1.0, 2.0]
+projects = ["kafka", "tvm", "james", "jackrabbit-oak", "hadoop"]
+
+[control]
+scorers = ["Hybrid-RRF", "TF-IDF+CC"]
+alphas = [0.1]
+pis = [0.1]
+controllers = ["online"]
+fixed = []
+threshold = true
+eta = 0.2
+cap = 6.9
+split_window = 19
+pac_window = 59
+pac_delta = 0.05
+meta_period = 20
+seeds = 30
+per_build = true
