@@ -148,6 +148,14 @@ A price grid with `anatomy = true` splits each escape by cause (a new failure, a
 python scripts/why_history.py --price data/results/dev-full/price-main data/results/dev-full/price-rest --anatomy data/results/dev-full/price-anatomy --control data/results/dev-full/control-main --evaluate 0.2 0.7 --out data/results/dev-full/why-history.md
 ```
 
+H7 replays three industrial CI logs in RETECS's format: Paint Control and IOF/ROL from ABB Robotics, and GSDTSR from Google. They are published in the [atcs-data repository](https://bitbucket.org/HelgeS/atcs-data), and the H7 script compares FULL with FAITHFUL on them:
+
+```bash
+python scripts/industrial.py --logs paintcontrol.csv iofrol.csv gsdtsr.csv --coverage paintcontrol.csv iofrol.csv --out data/results/industrial/h7.md
+```
+
+The registered report then takes its result into the primary family with `--industrial data/results/industrial/h7.json`.
+
 The processed release also lists builds that start after the studied window. They form a second held-out period: replayed after the studied builds as one timeline, at positions from 1 on, so a configuration with `evaluate = [1.0, 2.0]` scores them. Their suites, operational labels and change scores are built once:
 
 ```bash
