@@ -1,6 +1,6 @@
 import heapq
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Callable
 
@@ -102,6 +102,8 @@ class Replay:
     # each build's audit probability, and the share of change relevance outside its cut (NaN without a signal)
     pi: np.ndarray
     signal: np.ndarray
+    # builds at which the monitor raised an alarm
+    alarms: list[int] = field(default_factory=list)
 
     def executed(self, suite: Suite) -> np.ndarray:
         return self.selected | np.repeat(self.audited | self.forced, np.diff(suite.offsets))
@@ -175,6 +177,7 @@ def replay(suite: Suite, regime: str, scorer: Scorer, lam, pi: float = 0.0, seed
         cut.observe(u, rep.depth[rows][labeled].astype(float), caught, kind, weight)
         sampled = not adaptive or coins[u] < AUDIT_FLOOR
         if monitor is not None and kind == AUDIT and sampled and monitor.update(0.0 if caught else 1.0):
+            rep.alarms.append(now)
             alarm_until = max(alarm_until, now + hold)
 
     for t in range(n_builds):

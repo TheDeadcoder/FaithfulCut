@@ -159,40 +159,56 @@ def max_pending(starts: np.ndarray, finishes: np.ndarray) -> int:
     return peak
 
 
-def transfer_widths(n_faulty: int, audited_misses: int, pi: float, delta: float = 0.05) -> dict[str, float]:
-    """Half-widths for the full-stream escape rate around the inverse-propensity estimate from audits.
+def _rate(caught: float, escapes):
+    return escapes / np.maximum(caught + escapes, 1e-12)
 
-    The audited-miss martingale sum_k (A_k - pi) L_k has conditional variance pi (1 - pi) S, where S is
-    the unknown number of escapes; "worst" bounds S by n_faulty, "adaptive" takes the largest S still
-    consistent with the audited misses (Freedman), and "normal" plugs in the estimate.
+
+def _half_width(caught: float, escapes: float, spread: float) -> float:
+    centre = _rate(caught, escapes)
+    return float(max(_rate(caught, escapes + spread) - centre, centre - _rate(caught, max(escapes - spread, 0.0))))
+
+
+def transfer_widths(caught: int, audited_misses: int, pi: float, limit: int, delta: float = 0.05) -> dict[str, float]:
+    """The full-stream escape rate over faulty builds, estimated from what a deployment sees, with half-widths.
+
+    Faulty builds are the `caught` ones, which fail visibly, plus S escapes, which only audits reveal, so an interval
+    for S maps onto the rate S / (caught + S). The audited-miss martingale sum_k (A_k - pi) L_k has conditional
+    variance pi (1 - pi) S: "adaptive" takes every S up to `limit` (the builds whose selection caught nothing) still
+    consistent with the audited misses (Freedman), "normal" plugs in the inverse-propensity estimate of S, and "worst"
+    is Freedman's width with every faulty build an escape, at the estimated number of faulty builds.
     """
     log_term = math.log(2 / delta)
     b = max(pi, 1 - pi)
 
     def freedman(s):
-        return math.sqrt(2 * pi * (1 - pi) * s * log_term) + 2 * b * log_term / 3
+        return np.sqrt(2 * pi * (1 - pi) * s * log_term) + 2 * b * log_term / 3
 
-    estimate = audited_misses / (pi * n_faulty)
-    consistent = [s for s in range(n_faulty + 1) if abs(audited_misses - pi * s) <= freedman(s)]
-    adaptive = max(abs(s / n_faulty - estimate) for s in consistent) if consistent else 1.0
-    z = stats.norm.ppf(1 - delta / 2)
-    return {
-        "normal": z * math.sqrt(pi * (1 - pi) * audited_misses / pi) / (pi * n_faulty),
-        "adaptive": adaptive,
-        "worst": freedman(n_faulty) / (pi * n_faulty),
-    }
+    escapes = audited_misses / pi
+    estimate = float(_rate(caught, escapes))
+    s = np.arange(limit + 1)
+    consistent = s[np.abs(audited_misses - pi * s) <= freedman(s)]
+    adaptive = float(np.abs(_rate(caught, consistent) - estimate).max()) if len(consistent) else 1.0
+    spread = stats.norm.ppf(1 - delta / 2) * math.sqrt((1 - pi) * audited_misses) / pi
+    faulty = caught + escapes
+    return {"estimate": estimate, "normal": _half_width(caught, escapes, spread), "adaptive": adaptive,
+            "worst": float(freedman(faulty) / (pi * faulty)) if faulty else 1.0}
 
 
-def ht_widths(escaped: np.ndarray, audited: np.ndarray, pi: np.ndarray, delta: float = 0.05) -> dict[str, float]:
-    """Half-widths for the full-stream escape rate over faulty builds around the Horvitz-Thompson estimate, when each
-    faulty build is audited with its known probability pi: "normal" from the estimated variance, "worst" from
-    Freedman's inequality with every faulty build an escape. With one pi for all builds they equal the normal and
-    worst widths of transfer_widths."""
-    n = len(pi)
+def ht_widths(faulty: np.ndarray, caught: np.ndarray, audited: np.ndarray, pi: np.ndarray,
+              delta: float = 0.05) -> dict[str, float]:
+    """As transfer_widths when each build is audited with its own known probability pi, over the evaluated builds:
+    the Horvitz-Thompson count of escapes, "normal" from its estimated variance, and "worst" from Freedman's
+    inequality with every faulty build an escape, its variance estimated from the audited faulty builds. `faulty` is
+    read only where a build is caught or audited. With one pi for all builds the widths equal transfer_widths'."""
     log_term = math.log(2 / delta)
-    seen = escaped & audited
-    variance = ((1 - pi[seen]) / pi[seen] ** 2).sum()
+    n_caught = int((faulty & caught).sum())
+    seen = audited & faulty & ~caught
+    escapes = float((1 / pi[seen]).sum())
+    spread = stats.norm.ppf(1 - delta / 2) * math.sqrt(((1 - pi[seen]) / pi[seen] ** 2).sum())
+    sampled = audited & faulty
+    odds = np.average((1 - pi[sampled]) / pi[sampled], weights=1 / pi[sampled]) if sampled.any() else 0.0
+    n_faulty = n_caught + escapes
     bound = max(1.0, 1 / pi.min() - 1)
-    worst = math.sqrt(2 * ((1 - pi) / pi).sum() * log_term) + 2 * bound * log_term / 3
-    normal = stats.norm.ppf(1 - delta / 2) * math.sqrt(variance)
-    return {"estimate": float((1 / pi[seen]).sum() / n), "normal": float(normal / n), "worst": float(worst / n)}
+    worst = (math.sqrt(2 * n_faulty * odds * log_term) + 2 * bound * log_term / 3) / n_faulty if n_faulty else 1.0
+    return {"estimate": float(_rate(n_caught, escapes)), "normal": _half_width(n_caught, escapes, spread),
+            "worst": float(worst)}

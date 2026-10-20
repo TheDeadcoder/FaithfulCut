@@ -1,0 +1,18 @@
+name = "confirmatory/sensitivity-warmup-0.1"
+evaluate = [0.7, 1.0]
+projects = ["activemq", "hadoop", "hbase", "hive", "jackrabbit-oak", "james", "karaf", "log4j", "tvm", "kafka"]
+
+[control]
+scorers = ["LatestFail+CC", "TF-IDF+CC", "Hybrid", "Hybrid-RRF"]
+alphas = [0.1]
+pis = [0.1]
+controllers = ["online"]
+fixed = []
+eta = 0.2
+cap = 0.8
+warmup = 0.1
+split_window = 19
+pac_window = 59
+pac_delta = 0.05
+meta_period = 20
+seeds = 10

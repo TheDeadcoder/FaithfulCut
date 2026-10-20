@@ -86,6 +86,7 @@ def test_size_cap_and_alarms_force_full_runs_while_the_coin_keeps_flipping():
                      monitor=Monitor(alpha=0.05, delta=0.5, rho=1.0), hold=5)
     alarms = np.flatnonzero(alarmed.reason == 3)
     assert len(alarms) >= 5 and alarmed.audited[alarms].any() and not alarmed.audited[alarms].all()
+    assert alarmed.alarms and all(alarmed.reason[t] == 3 for t in alarmed.alarms if t < len(rows))
 
 
 def test_monitor_rarely_raises_false_alarms_and_catches_a_jump():
@@ -103,9 +104,20 @@ def test_monitor_rarely_raises_false_alarms_and_catches_a_jump():
 
 
 def test_transfer_widths_reproduce_the_worked_kafka_example():
-    w = transfer_widths(n_faulty=691, audited_misses=9, pi=0.25)
+    w = transfer_widths(caught=655, audited_misses=9, pi=0.25, limit=1345)
+    assert w["estimate"] == pytest.approx(36 / 691)
     assert w["worst"] == pytest.approx(0.19, abs=0.005)
     assert w["normal"] < w["adaptive"] < w["worst"]
+
+
+def test_adaptive_certificate_covers_the_escape_rate_without_the_count_of_faulty_builds():
+    rng = np.random.default_rng(0)
+    covered = []
+    for _ in range(400):
+        misses = rng.binomial(60, 0.1)
+        w = transfer_widths(caught=540, audited_misses=misses, pi=0.1, limit=2460)
+        covered.append(abs(w["estimate"] - 0.1) <= w["adaptive"])
+    assert np.mean(covered) >= 0.95
 
 
 def test_max_pending_counts_overlaps_but_not_touching_intervals():
@@ -136,11 +148,13 @@ def test_fixed_cut_ignores_feedback():
 
 def test_unequal_probability_widths_match_the_uniform_ones_when_pi_is_constant():
     rng = np.random.default_rng(0)
-    escaped, audited = rng.random(400) < 0.1, rng.random(400) < 0.25
-    ht = ht_widths(escaped, audited, np.full(400, 0.25))
-    uniform = transfer_widths(400, int((escaped & audited).sum()), 0.25)
+    faulty, audited = rng.random(1000) < 0.4, rng.random(1000) < 0.25
+    caught = faulty & (rng.random(1000) > 0.1)
+    misses = int((audited & faulty & ~caught).sum())
+    ht = ht_widths(faulty, caught, audited, np.full(1000, 0.25))
+    uniform = transfer_widths(int((faulty & caught).sum()), misses, 0.25, int((~(faulty & caught)).sum()))
     assert ht["normal"] == pytest.approx(uniform["normal"]) and ht["worst"] == pytest.approx(uniform["worst"])
-    assert ht["estimate"] == pytest.approx((escaped & audited).sum() / 0.25 / 400)
+    assert ht["estimate"] == pytest.approx(uniform["estimate"])
 
 
 def test_online_step_scales_with_its_weight():

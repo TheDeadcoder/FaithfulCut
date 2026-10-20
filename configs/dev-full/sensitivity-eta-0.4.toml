@@ -3,7 +3,7 @@ evaluate = [0.2, 0.7]
 projects = ["activemq", "hadoop", "hbase", "hive", "jackrabbit-oak", "james", "karaf", "log4j", "tvm", "kafka"]
 
 [control]
-scorers = ["LatestFail+CC", "TF-IDF+CC", "Hybrid"]
+scorers = ["LatestFail+CC", "TF-IDF+CC", "Hybrid", "Hybrid-RRF"]
 alphas = [0.1]
 pis = [0.1]
 controllers = ["online"]
