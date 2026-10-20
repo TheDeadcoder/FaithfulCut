@@ -20,6 +20,7 @@ The study uses the LRTS dataset of long-running test suites.
 | `LRTS_REPO` | A clone of [LRTS](https://github.com/lrtsuser/LRTS) checked out at commit `2c1b68e9b1d4ec6c4f304869e36af2e3168da889` |
 | `LRTS_DIR` | The `long_running_test_suites` folder unpacked from the processed LRTS release (`long_running_test_suites.zip`, linked from the LRTS README, SHA-256 `49ab497ce43b1706a7f8d340859c602be6adbcc1996cd81d0438523209cb9d6c`) |
 | `FAITHFULCUT_CACHE` | Optional. A writable folder for derived data, such as per-project suites, which are built from the inputs on first use |
+| `DANTE_DIR` | Optional. The parts of DANTE's replication package that `scripts/fetch_dante.py` fetches |
 
 The runs studied are those listed in `$LRTS_REPO/artifact/metadata/dataset.csv`. Its SHA-256 is `49570f8dca753c385f25346f8aaaded3a841b0e67dabf36fbb67260a79b02987`.
 
@@ -39,6 +40,18 @@ python scripts/clone_repos.py
 
 ```bash
 python scripts/build_ir.py
+```
+
+DANTE's scorer is ported from its MIT-licensed replication package ([Zenodo record 18900675](https://zenodo.org/records/18900675)). This fetches the package's code, paper, published prioritization results and sample processed builds (about 13 MB of the 3.6 GB archive) into a new folder. With `DANTE_DIR` set to that folder, `pytest` also checks the port against DANTE's own outputs:
+
+```bash
+python scripts/fetch_dante.py <folder>
+```
+
+DANTE's relevance scores for its nine Java projects are computed once into `FAITHFULCUT_CACHE`:
+
+```bash
+python scripts/build_dante.py
 ```
 
 ## Experiments

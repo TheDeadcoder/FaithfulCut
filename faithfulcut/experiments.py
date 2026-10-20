@@ -1,7 +1,8 @@
-from functools import lru_cache
+from functools import cache, lru_cache
 
 import numpy as np
 
+from faithfulcut import dante
 from faithfulcut.control import FixedCut, MetaCut, Monitor, OnlineCut, SplitCut, max_pending, transfer_widths
 from faithfulcut.ir import load_ir
 from faithfulcut.labels import load_operational, transfer
@@ -19,8 +20,15 @@ def setup(project: str, seed: int, evaluate: tuple[float, float]):
     labels = {"operational": load_operational(full, seed)[:rows]}
     labels.update({k: v[:rows] for k, v in transfer(full).items()})
     scorers = {**history_scorers(suite), **ir_scorers(suite, load_ir(full, "seen"))}
+    if project in dante.PROJECTS:
+        relevance = cache(lambda: dante.load_relevance(full))
+        scorers.update(dante.dante_scorers(suite, relevance, dante.stage_counts(full)))
     position = suite.builds["position"].to_numpy()
     return suite, labels, scorers, (position >= evaluate[0]) & (position < evaluate[1])
+
+
+def available(project: str, scorer: str) -> bool:
+    return not scorer.startswith("DANTE") or project in dante.PROJECTS
 
 
 def summarize(suite: Suite, rep, labels: dict[str, np.ndarray], evaluate: np.ndarray) -> dict:
