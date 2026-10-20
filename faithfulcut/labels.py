@@ -141,6 +141,26 @@ def transfer(suite: Suite, stage_rule: str | None = None) -> dict[str, np.ndarra
     raise ValueError(f"unknown stage rule {stage_rule}")
 
 
+def new_failures(suite: Suite, label: np.ndarray, seed: int, pi: float, warmup: float = 0.2) -> np.ndarray:
+    """Rows of `label` whose class has never failed in a full run, warm-up or coin audit, finished before the build
+    started: the deployable counterpart of LRTS's FirstFail. Every policy with the same seed and audit rate shares
+    them."""
+    start, finish = suite.builds["start"].to_numpy(), suite.builds["finish"].to_numpy()
+    full = np.flatnonzero((suite.builds["position"].to_numpy() < warmup) | (audit_coins(seed, len(start)) < pi))
+    full = full[np.argsort(finish[full], kind="stable")]
+    failed = np.zeros(len(suite.names), dtype=bool)
+    out = np.zeros(len(label), dtype=bool)
+    k = 0
+    for t in range(len(start)):
+        while k < len(full) and finish[full[k]] <= start[t]:
+            rows = suite.rows(full[k])
+            failed[suite.cls[rows]] |= suite.failed[rows]
+            k += 1
+        rows = suite.rows(t)
+        out[rows] = label[rows] & ~failed[suite.cls[rows]]
+    return out
+
+
 def cold_rows(suite: Suite, k: int = 5) -> np.ndarray:
     """Rows whose class had run in at least one but fewer than `k` builds finished before the build started."""
     start, finish = suite.builds["start"].to_numpy(), suite.builds["finish"].to_numpy()

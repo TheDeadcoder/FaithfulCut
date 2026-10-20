@@ -7,7 +7,7 @@ from faithfulcut.control import (FixedCut, MetaCut, Monitor, OnlineCut, SplitCut
                                  transfer_widths)
 from faithfulcut.ir import load_ir
 from faithfulcut.metrics import first_failure_time
-from faithfulcut.labels import cold_rows, load_operational, transfer
+from faithfulcut.labels import cold_rows, load_operational, new_failures, transfer
 from faithfulcut.replay import replay
 from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers
 from faithfulcut.suite import Suite, load_suite
@@ -148,31 +148,35 @@ def make_controller(kind: str, alpha: float, cfg: dict, project: str = "", score
 
 def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, seed: int, cfg: dict,
                  evaluate: tuple[float, float]) -> list[dict]:
-    """One controller replay; a kind ending in "+adaptive" audits by the change signal instead of uniformly."""
+    """One controller replay; a kind ending in "+adaptive" audits by the change signal instead of uniformly. The
+    controller's target is the operational label unless the config's `target` names another."""
     suite, labels, scorers, mask = setup(project, seed, evaluate)
+    labels = {**labels, "newfail": new_failures(suite, labels["operational"], seed, pi, cfg.get("warmup", 0.2))}
+    target = cfg.get("target", "operational")
     base, _, audits = kind.partition("+")
     cut, feedback, monitor, cap = make_controller(base, alpha, cfg, project, scorer)
-    rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels["operational"],
+    rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels[target],
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"),
                  warmup=cfg.get("warmup", 0.2),
                  signal=change_signal(project, evaluate[1] > 1), adaptive=audits == "adaptive")
     alarms = np.array([t for t in rep.alarms if t < len(mask)], dtype=int)
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
-           **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False)),
+           "target": target, **summarize(suite, rep, labels, mask, timing=True,
+                                         per_build=cfg.get("per_build", False)),
            "alarms": int(mask[alarms].sum()), "alarm_builds": int((mask & (rep.reason == 3)).sum())}
     of_row, n = suite.build_of_rows(), len(suite.builds)
-    faulty = np.bincount(of_row, weights=labels["operational"], minlength=n) > 0
+    faulty = np.bincount(of_row, weights=labels[target], minlength=n) > 0
     if isinstance(cut, OnlineCut):
         updates = rep.audited & faulty & (rep.reason != 1)
         start, finish = suite.builds["start"].to_numpy(), suite.builds["finish"].to_numpy()
         row.update({"updates": len(cut.losses), "pending": max_pending(start[updates], finish[updates]),
                     "lam_min": min(cut.path), "lam_max": max(cut.path)})
-    if row["operational_faulty"]:
-        caught = row["operational_faulty"] - row["operational_escape"]
-        widths = transfer_widths(caught, row["operational_audited_escape"], pi, row["builds"] - caught)
+    if row[f"{target}_faulty"]:
+        caught = row[f"{target}_faulty"] - row[f"{target}_escape"]
+        widths = transfer_widths(caught, row[f"{target}_audited_escape"], pi, row["builds"] - caught)
         row.update({"escape_ipw": widths.pop("estimate"), **{f"width_{k}": v for k, v in widths.items()}})
         idx = np.flatnonzero(mask)
-        found = np.bincount(of_row, weights=labels["operational"] & rep.selected, minlength=n) > 0
+        found = np.bincount(of_row, weights=labels[target] & rep.selected, minlength=n) > 0
         coin = rep.audited & (rep.reason != 1)
         ht = ht_widths(faulty[idx], found[idx], coin[idx], rep.pi[idx])
         row.update({"escape_ht": ht["estimate"], "width_ht_normal": ht["normal"], "width_ht_worst": ht["worst"]})
