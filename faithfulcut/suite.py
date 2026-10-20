@@ -25,6 +25,12 @@ class Suite:
     files: np.ndarray
     file_offsets: np.ndarray
     file_ids: np.ndarray
+    tag: str = ""
+
+    @property
+    def key(self) -> str:
+        """Name for this suite's caches: the project, marked when it runs past the studied window."""
+        return self.project + self.tag
 
     def rows(self, t: int) -> slice:
         return slice(self.offsets[t], self.offsets[t + 1])
@@ -41,12 +47,15 @@ class Suite:
         r, f = self.offsets[n], self.file_offsets[n]
         return Suite(self.project, self.names, self.builds.iloc[:n].reset_index(drop=True), self.offsets[:n + 1],
                      self.cls[:r], self.failed[:r], self.failed_everywhere[:r], self.duration[:r], self.files,
-                     self.file_offsets[:n + 1], self.file_ids[:f])
+                     self.file_offsets[:n + 1], self.file_ids[:f], self.tag)
 
 
-def build_suite(project: str) -> Suite:
-    builds = lrts.load_builds(project)
-    stages = lrts.load_runs(project).groupby(["pr_name", "build_id"])["stage_id"].apply(list)
+LATER = "-later"
+
+
+def build_suite(project: str, later: bool = False) -> Suite:
+    builds = lrts.load_builds(project, later)
+    stages = lrts.load_runs(project, later).groupby(["pr_name", "build_id"])["stage_id"].apply(list)
     index, offsets, parts = {}, [0], []
     file_index, file_offsets, file_parts = {}, [0], []
     for b in builds.itertuples(index=False):
@@ -64,21 +73,23 @@ def build_suite(project: str) -> Suite:
     cls, failed, everywhere, duration = (np.concatenate(p) for p in zip(*parts))
     return Suite(project, np.array(list(index)), builds[BUILD_COLUMNS], np.array(offsets), cls, failed, everywhere,
                  duration, np.array(list(file_index), dtype=str), np.array(file_offsets),
-                 np.concatenate(file_parts + [np.empty(0, np.int32)]))
+                 np.concatenate(file_parts + [np.empty(0, np.int32)]), LATER if later else "")
 
 
-def cache_path(project: str) -> Path | None:
+def cache_path(key: str) -> Path | None:
     root = os.environ.get("FAITHFULCUT_CACHE")
-    return Path(root) / f"suite-v{VERSION}" / f"{project}.npz" if root else None
+    return Path(root) / f"suite-v{VERSION}" / f"{key}.npz" if root else None
 
 
-def load_suite(project: str) -> Suite:
-    path = cache_path(project)
+def load_suite(project: str, later: bool = False) -> Suite:
+    """The project's suite, cached; with `later`, extended by the builds after the studied window."""
+    tag = LATER if later else ""
+    path = cache_path(project + tag)
     if path is not None and path.exists():
         z = np.load(path)
         builds = pd.DataFrame({c: z[c] for c in BUILD_COLUMNS})
-        return Suite(project, z["names"], builds, *(z[a] for a in ROW_ARRAYS))
-    suite = build_suite(project)
+        return Suite(project, z["names"], builds, *(z[a] for a in ROW_ARRAYS), tag)
+    suite = build_suite(project, later)
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         builds = {c: suite.builds[c].to_numpy(dtype=str if suite.builds[c].dtype == object else None)

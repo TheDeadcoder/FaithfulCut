@@ -16,7 +16,7 @@ from faithfulcut.suite import Suite, load_suite
 @lru_cache(maxsize=2)
 def setup(project: str, seed: int, evaluate: tuple[float, float]):
     """The suite up to the end of the evaluated span, its labels, the scorers and the evaluated builds."""
-    full = load_suite(project)
+    full = load_suite(project, later=evaluate[1] > 1)
     suite = full.before(evaluate[1])
     rows = suite.offsets[-1]
     labels = {"operational": load_operational(full, seed)[:rows]}
@@ -40,9 +40,9 @@ FLAG_SHARE = 0.5
 
 
 @lru_cache(maxsize=2)
-def change_signal(project: str):
+def change_signal(project: str, later: bool = False):
     """Share of the build's TF-IDF relevance mass that falls on classes outside its cut."""
-    ir = load_ir(load_suite(project), "seen")
+    ir = load_ir(load_suite(project, later), "seen")
 
     def signal(t: int, depth_by_class: np.ndarray, lam: float) -> float:
         part = slice(ir["offsets"][t], ir["offsets"][t + 1])
@@ -154,7 +154,7 @@ def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, 
     cut, feedback, monitor, cap = make_controller(base, alpha, cfg, project, scorer)
     rep = replay(suite, "faithful", scorers[scorer], lam=cut, pi=pi, seed=seed, label=labels["operational"],
                  feedback=feedback, cap=cap, monitor=monitor, retire_after=cfg.get("retire_after"),
-                 signal=change_signal(project), adaptive=audits == "adaptive")
+                 signal=change_signal(project, evaluate[1] > 1), adaptive=audits == "adaptive")
     row = {"project": project, "scorer": scorer, "controller": kind, "alpha": alpha, "pi": pi, "seed": seed,
            **summarize(suite, rep, labels, mask, timing=True, per_build=cfg.get("per_build", False))}
     if isinstance(cut, OnlineCut):

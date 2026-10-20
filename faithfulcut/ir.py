@@ -223,14 +223,24 @@ def load_ir(suite: Suite, corpus: str = "seen") -> dict[str, np.ndarray]:
     """Per-build TF-IDF scores of the diff against each corpus class's test sources.
 
     corpus "seen": classes observed in builds finished before the build starts; "report": the build's own classes.
+    A suite extended past the studied window reuses the studied builds' scores, which come first and are unchanged.
     """
-    path = _ir_path(suite.project, corpus)
+    path = _ir_path(suite.key, corpus)
     if path.exists():
         return dict(np.load(path))
+    base = _ir_path(suite.project, corpus)
+    base = dict(np.load(base)) if suite.key != suite.project and base.exists() else None
     repo = _Repo(suite.project)
     offsets, cls, scores, missing = [0], [], [], np.zeros(len(suite.builds), dtype=bool)
     try:
         for t, classes in _corpora(suite, corpus):
+            if base is not None and t < len(base["offsets"]) - 1:
+                part = slice(base["offsets"][t], base["offsets"][t + 1])
+                cls.append(base["cls"][part])
+                scores.append(base["score"][part])
+                offsets.append(offsets[-1] + part.stop - part.start)
+                missing[t] = base["missing"][t]
+                continue
             b = suite.builds.iloc[t]
             files = repo.tree(b["trunk_sha"])
             missing[t] = files is None

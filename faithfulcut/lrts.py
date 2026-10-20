@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 RUN_KEY = ["project", "pr_name", "build_id", "stage_id"]
@@ -23,19 +24,35 @@ def metadata() -> pd.DataFrame:
     return pd.read_csv(metadata_path(), dtype={"stage_id": str})
 
 
-def load_runs(project: str) -> pd.DataFrame:
+def release_metadata() -> pd.DataFrame:
+    """The processed release's own run list, which continues past the studied window."""
+    return pd.read_csv(data_dir() / "dataset.csv", dtype={"stage_id": str})
+
+
+def load_runs(project: str, later: bool = False) -> pd.DataFrame:
+    """The studied runs; with `later`, also the release's runs of builds that start after the studied window."""
     meta = metadata()
     meta = meta[meta["project"] == project]
+    if later:
+        release = release_metadata()
+        release = release[release["project"] == project]
+        studied = set(zip(meta["pr_name"], meta["build_id"]))
+        after = (release["build_timestamp"] > meta["build_timestamp"].max()) & np.array(
+            [k not in studied for k in zip(release["pr_name"], release["build_id"])], dtype=bool)
+        meta = pd.concat([meta, release[after]])
     runs = meta[RUN_KEY + ["trunk_sha", "build_head_sha"]].copy()
     runs["start"] = meta["build_timestamp"]
     runs["finish"] = meta["build_timestamp"] + meta["build_duration"]
     return runs.reset_index(drop=True)
 
 
-def load_builds(project: str) -> pd.DataFrame:
-    builds = load_runs(project).drop_duplicates(["pr_name", "build_id"]).drop(columns="stage_id")
+def load_builds(project: str, later: bool = False) -> pd.DataFrame:
+    """Builds in start order. Studied builds take positions in [0, 1) by rank; later builds follow from 1."""
+    builds = load_runs(project, later).drop_duplicates(["pr_name", "build_id"]).drop(columns="stage_id")
     builds = builds.sort_values(["start", "pr_name", "build_id"], kind="stable").reset_index(drop=True)
-    builds["position"] = builds.index / len(builds)
+    n = len(load_runs(project).drop_duplicates(["pr_name", "build_id"])) if later else len(builds)
+    rank = builds.index.to_numpy()
+    builds["position"] = np.where(rank < n, rank / n, 1 + (rank - n) / max(len(builds) - n, 1))
     return builds
 
 
