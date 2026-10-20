@@ -48,12 +48,14 @@ def by_budget(folders: list[str], evaluate: tuple[float, float], targets: list[f
 
 
 def anatomy(folder: str, work: float) -> pd.DataFrame:
-    """Escape rates by cause, latency and wasted work interpolated at the target executed work, as macros."""
+    """Escape rates by cause, latency and wasted work interpolated at the target executed work, as macros. Wasted work
+    is left out where the evaluated builds have no DeConf label."""
     df = pd.read_csv(Path(folder) / "price.csv")
     faulty = df["operational_faulty"].replace(0, np.nan)
     metrics = {f"escape {c}": df[f"operational_escape_{c}"] / faulty for c in CAUSES}
     metrics.update({"escape": df["operational_escape"] / faulty, "hidden builds": df["operational_hidden_builds"],
-                    "hidden hours": df["operational_hidden_hours"], "waste": df["waste_share"]})
+                    "hidden hours": df["operational_hidden_hours"],
+                    "waste": df["waste_share"] if df["deconf_faulty"].sum() else np.nan})
     df = df.assign(**metrics)
     rows = []
     for key, g in df.groupby(["project", "scorer", "regime", "seed"]):
