@@ -315,6 +315,28 @@ def pooled_share(parts: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
         return hits / total
 
 
+def budget_flags(score: np.ndarray, share: float, step: float) -> np.ndarray:
+    """Flags from an online threshold that tracks a review budget: a unit is flagged when its score exceeds the
+    threshold, which then rises by step * (1 - share) after a flag and falls by step * share otherwise, so the flagged
+    share approaches `share` over time. NaN scores are never flagged."""
+    s = np.nan_to_num(np.asarray(score, dtype=float), nan=-np.inf)
+    flags = np.zeros(len(s))
+    threshold = 0.0
+    for t, value in enumerate(s):
+        flags[t] = value > threshold
+        threshold += step * (flags[t] - share)
+    return flags
+
+
+def auc(score: np.ndarray, positive: np.ndarray) -> float:
+    """The chance that a positive unit scores above a negative one, ties counting half (NaN without both)."""
+    n_pos, n_neg = int(positive.sum()), int((~positive).sum())
+    if not n_pos or not n_neg:
+        return np.nan
+    ranks = stats.rankdata(score)
+    return float((ranks[positive].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
+
+
 def matched_replicates(rows: pd.DataFrame, outcomes: dict, builds: np.ndarray, weights: np.ndarray, label: str,
                        work: float = 0.2, **keys) -> np.ndarray:
     """Bootstrap replicates of a price-grid condition's escape rate at matched executed work."""
