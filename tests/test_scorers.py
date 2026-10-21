@@ -2,8 +2,9 @@ import numpy as np
 import pytest
 from synthetic import make_suite, perturb, random_suite
 
+from faithfulcut.experiments import label_levels
 from faithfulcut.replay import History, replay
-from faithfulcut.scorers import (depth_split, history_scorers, hybrid_scorers, ir_scorers, rank_fusion,
+from faithfulcut.scorers import (depth_split, history_scorers, hybrid_scorers, ir_scorers, llm_scorer, rank_fusion,
                                  structure_scorers)
 from faithfulcut.structure import UNKNOWN
 
@@ -123,3 +124,16 @@ def test_structural_orders_run_the_nearest_classes_first_and_break_ties_by_durat
                                                                   "score": np.empty(0)})["TF-IDF+CC"])
     assert first_in_order(s, scorers["Module"], 2) == [1, 2, 0, 3]
     assert first_in_order(s, scorers["Path"], 2) == [2, 3, 1, 0]
+
+
+def test_the_llm_order_puts_named_risks_first_from_the_switch_on():
+    s = sequential([[], [], [], []])
+    scorer = llm_scorer(s, lambda t: np.array([3, 3, 0]), lambda h, t: np.array([3.0, 1.0, 2.0]), start=0.5)
+    assert first_in_order(s, scorer, 1) == [1, 2, 0]
+    assert first_in_order(s, scorer, 3) == [2, 1, 0]
+
+
+def test_the_oracle_levels_put_the_classes_a_build_breaks_first():
+    s = make_suite([(np.array([0, 1, 2]), np.array([False, True, False]), np.ones(3))] * 2, np.array([0.0, 10.0]),
+                   np.array([1.0, 11.0]))
+    assert label_levels(s, s.failed)(1).tolist() == [3, 0, 3]
