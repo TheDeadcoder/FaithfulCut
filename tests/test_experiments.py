@@ -5,9 +5,10 @@ import pandas as pd
 import pytest
 from synthetic import make_suite, random_suite
 
-from faithfulcut.analysis import (at_matched_work, at_work, break_even_hours, cluster_weights, compare,
-                                  condition_sums, energy, holm, kendall_tau, load_outcomes, one_sided, pooled_share,
-                                  ranking_flips, replicate_rates, significant_flips, tuned_budgets, work_at_rate)
+from faithfulcut.analysis import (at_matched_work, at_work, auc, break_even_hours, budget_flags, cluster_weights,
+                                  compare, condition_sums, energy, holm, kendall_tau, load_outcomes, one_sided,
+                                  pooled_share, ranking_flips, replicate_rates, significant_flips, tuned_budgets,
+                                  work_at_rate)
 from faithfulcut.control import FixedCut
 from faithfulcut.experiments import is_documentation, make_controller, summarize
 from faithfulcut.labels import cold_rows, new_failures
@@ -149,6 +150,18 @@ def test_pooled_share_weighs_units_over_strata():
     a, b = (np.array([[1.0, 1.0], [2.0, 0.0]]), [1, 0]), (np.array([[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]]), [1, 1, 0])
     assert pooled_share([a, b]).tolist() == pytest.approx([3 / 5, 1.0])
     assert np.isnan(pooled_share([b])[1])
+
+
+def test_review_threshold_tracks_the_budget():
+    assert budget_flags(np.array([0.5, 0.5, 0.5, 0.0, np.nan]), 0.5, 0.2).tolist() == [1, 1, 1, 0, 0]
+    drifting = np.random.default_rng(0).random(20000) * np.linspace(0.2, 1.0, 20000)
+    assert budget_flags(drifting, 0.1, 0.01).mean() == pytest.approx(0.1, abs=0.005)
+
+
+def test_auc_counts_ties_as_half():
+    assert auc(np.array([3.0, 2.0, 1.0]), np.array([True, False, False])) == 1.0
+    assert auc(np.array([1.0, 1.0]), np.array([True, False])) == 0.5
+    assert np.isnan(auc(np.array([1.0, 2.0]), np.array([True, True])))
 
 
 def test_compare_and_holm():
