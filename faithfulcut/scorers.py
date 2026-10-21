@@ -111,3 +111,19 @@ def structure_scorers(structure: Callable[[], dict[str, np.ndarray]], content: S
 
     module = by("module")
     return {"Module": module, "Path": by("path"), "Module+TF-IDF": rank_fusion(module, content)}
+
+
+def llm_scorer(suite: Suite, levels: Callable[[int], np.ndarray], content: Scorer, start: float) -> Scorer:
+    """The model's risk levels for each build from position `start` on, ties broken by the content order, which alone
+    orders the builds before it: the model is asked only from where the evaluation starts, so the two orders share
+    everything earlier."""
+    position = suite.builds["position"].to_numpy()
+
+    def score(h: History, t: int) -> np.ndarray:
+        base = content(h, t)
+        if position[t] < start:
+            return base
+        rank = np.unique(base, return_inverse=True)[1]
+        return levels(t) + rank / (rank.max() + 1)
+
+    return score

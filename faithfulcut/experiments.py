@@ -1,3 +1,4 @@
+import json
 from functools import cache, lru_cache
 
 import numpy as np
@@ -9,10 +10,39 @@ from faithfulcut.ir import is_test_source, load_ir, lrts_pattern
 from faithfulcut.metrics import escape_causes, first_failure_time, hidden_latency
 from faithfulcut.labels import cold_rows, load_operational, new_failures, transfer
 from faithfulcut.learned import learned_scorers
+from faithfulcut.llm import answer_path, risk_levels
 from faithfulcut.replay import replay
-from faithfulcut.scorers import history_scorers, hybrid_scorers, ir_scorers, relevance, structure_scorers
+from faithfulcut.scorers import (history_scorers, hybrid_scorers, ir_scorers, llm_scorer, relevance,
+                                 structure_scorers)
 from faithfulcut.structure import NO_MODULES, load_structure
 from faithfulcut.suite import Suite, load_suite
+
+
+LLM_MODEL = "gemini-3.5-flash-lite"
+ORACLE = "Oracle-"
+
+
+def llm_levels(suite: Suite, model: str = LLM_MODEL):
+    """Each class's risk level in the model's saved answer for build t, 3 when unnamed; a missing answer raises."""
+
+    @cache
+    def levels(t: int) -> np.ndarray:
+        return risk_levels(json.loads(answer_path(suite, t, model).read_text()), suite.names)[0]
+
+    return levels
+
+
+def label_levels(suite: Suite, label: np.ndarray):
+    """Level 0 for the classes failing with the label in build t and 3 for the rest: an order that knows which tests
+    the build breaks."""
+
+    def levels(t: int) -> np.ndarray:
+        out = np.full(len(suite.names), 3)
+        rows = suite.rows(t)
+        out[suite.cls[rows][label[rows]]] = 0
+        return out
+
+    return levels
 
 
 @lru_cache(maxsize=2)
@@ -29,6 +59,7 @@ def setup(project: str, seed: int, evaluate: tuple[float, float]):
     scorers.update(hybrid_scorers(scorers["LatestFail+CC"], scorers["TF-IDF+CC"]))
     scorers.update(structure_scorers(cache(lambda: load_structure(full)), scorers["TF-IDF+CC"]))
     scorers.update(learned_scorers(suite, relevance(suite, ir), seed))
+    scorers["LLM"] = llm_scorer(suite, llm_levels(suite), scorers["TF-IDF+CC"], evaluate[0])
     if project in dante.PROJECTS:
         dante_relevance = cache(lambda: dante.load_relevance(full))
         scorers.update(dante.dante_scorers(suite, dante_relevance, dante.stage_counts(full)))
@@ -220,9 +251,14 @@ def make_controller(kind: str, alpha: float, cfg: dict, project: str = "", score
 def control_task(project: str, scorer: str, kind: str, alpha: float, pi: float, seed: int, cfg: dict,
                  evaluate: tuple[float, float]) -> list[dict]:
     """One controller replay; a kind ending in "+adaptive" audits by the change signal instead of uniformly. The
-    controller's target is the operational label unless the config's `target` names another."""
+    controller's target is the operational label unless the config's `target` names another. An order named
+    "Oracle-<label>" runs the classes failing with that label first and the rest as TF-IDF+CC does, from where the
+    evaluation starts, as the LLM order does."""
     suite, labels, scorers, mask = setup(project, seed, evaluate)
     labels = {**labels, "newfail": new_failures(suite, labels["operational"], seed, pi, cfg.get("warmup", 0.2))}
+    if scorer.startswith(ORACLE):
+        oracle = label_levels(suite, labels[scorer.removeprefix(ORACLE)])
+        scorers = {**scorers, scorer: llm_scorer(suite, oracle, scorers["TF-IDF+CC"], evaluate[0])}
     target = cfg.get("target", "operational")
     base, _, audits = kind.partition("+")
     cut, feedback, monitor, cap = make_controller(base, alpha, cfg, project, scorer)
