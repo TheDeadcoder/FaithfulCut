@@ -165,14 +165,28 @@ def risk_levels(answer: dict, catalog_names: np.ndarray) -> tuple[np.ndarray, bo
         return np.full(len(catalog_names), 3), False
 
 
-def caught(keys: list[np.ndarray], duration: np.ndarray, failing: np.ndarray, rng: np.random.Generator,
-           budget: float) -> float:
-    """Whether a failing class enters the prefix within `budget` of predicted time under the lexicographic keys."""
+def first_depth(keys: list[np.ndarray], duration: np.ndarray, failing: np.ndarray,
+                rng: np.random.Generator) -> float:
+    """The share of predicted time by which the first failing class has run under the lexicographic keys."""
     order = np.lexsort([rng.random(len(duration))] + keys[::-1])
     cumulative = np.cumsum(duration[order])
     depth = np.empty(len(order))
     depth[order] = cumulative / cumulative[-1] if cumulative[-1] > 0 else 0.0
-    return float((depth[failing] <= budget).any())
+    return float(depth[failing].min())
+
+
+def caught(keys: list[np.ndarray], duration: np.ndarray, failing: np.ndarray, rng: np.random.Generator,
+           budget: float) -> float:
+    """Whether a failing class enters the prefix within `budget` of predicted time under the lexicographic keys."""
+    return float(first_depth(keys, duration, failing, rng) <= budget)
+
+
+def budget_for_share(depth: np.ndarray, weights: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Per replicate (row of weights), the smallest budget at which the weighted share of units whose depth is within
+    it reaches that replicate's target."""
+    order = np.argsort(depth, kind="stable")
+    share = np.cumsum(weights[:, order], axis=1) / weights.sum(axis=1, keepdims=True)
+    return depth[order][(share >= target[:, None] - 1e-12).argmax(axis=1)]
 
 
 def llm_keys(ranks: np.ndarray, tfidf_cc: np.ndarray, duration: np.ndarray, fusion: str) -> list[np.ndarray]:
@@ -194,8 +208,9 @@ def evaluate(project: str, builds: list[int], model: str, budget: float, fusion:
              dry_run: bool = False, offline: bool = False, diffs: dict[int, int] | None = None,
              variant: str = "") -> list[dict]:
     """Per build whose first-failing classes are all in its catalog, whether QTF, LatestFail+CC, TF-IDF+CC and the
-    LLM's order with `fusion` put one of them within `budget` of predicted time. `diffs` shows a build another
-    build's diff, with the answers kept under `variant`."""
+    LLM's order with `fusion` put one of them within `budget` of predicted time, and the share of predicted time by
+    which each order runs the first one ("<order> depth"). `diffs` shows a build another build's diff, with the
+    answers kept under `variant`."""
     suite = load_suite(project)
     first = transfer(suite)["firstfail"]
     ir = load_ir(suite, "seen")
@@ -224,19 +239,20 @@ def evaluate(project: str, builds: list[int], model: str, budget: float, fusion:
         scores[ir["cls"][part]] = ir["score"][part]
         tfidf_cc = 1 / (scores[catalog] + EPS) * (duration + EPS)
         rng = lambda: np.random.default_rng([t, len(catalog)])
-        row = {"project": project, "build": t, "classes": len(catalog),
-               "QTF": caught([duration], duration, failing, rng(), budget),
-               "LatestFail+CC": caught([(since_fail + EPS) * (duration + EPS)], duration, failing, rng(), budget),
-               "TF-IDF+CC": caught([tfidf_cc], duration, failing, rng(), budget)}
+        keys = {"QTF": [duration], "LatestFail+CC": [(since_fail + EPS) * (duration + EPS)], "TF-IDF+CC": [tfidf_cc]}
+        row = {"project": project, "build": t, "classes": len(catalog)}
         if answer is None:
             row["prompt_chars"] = prompt_chars
         else:
             ranks, ok = risk_levels(answer, suite.names[catalog])
             usage = answer.get("usageMetadata", {})
-            row.update({"LLM": caught(llm_keys(ranks, tfidf_cc, duration, fusion), duration, failing, rng(), budget),
-                        "well_formed": ok,
+            keys["LLM"] = llm_keys(ranks, tfidf_cc, duration, fusion)
+            row.update({"well_formed": ok,
                         "latency": answer["latency"], "input_tokens": usage.get("promptTokenCount"),
                         "output_tokens": usage.get("candidatesTokenCount"),
                         "thinking_tokens": usage.get("thoughtsTokenCount", 0)})
+        for name, key in keys.items():
+            row[f"{name} depth"] = first_depth(key, duration, failing, rng())
+            row[name] = float(row[f"{name} depth"] <= budget)
         rows.append(row)
     return rows

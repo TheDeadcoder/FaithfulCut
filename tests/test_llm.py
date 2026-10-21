@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from faithfulcut import llm
-from faithfulcut.llm import ask, caught, llm_keys, risk_levels
+from faithfulcut.llm import ask, budget_for_share, caught, first_depth, llm_keys, risk_levels
 
 NAMES = np.array(["A", "B", "C"])
 
@@ -62,6 +62,17 @@ def network(monkeypatch, outcomes) -> list[float]:
 
 def http_error(code: int) -> urllib.error.HTTPError:
     return urllib.error.HTTPError("url", code, "error", {}, io.BytesIO(b"detail"))
+
+
+def test_first_depth_is_the_predicted_time_share_by_which_a_failing_class_has_run():
+    duration = np.array([1.0, 2.0, 1.0])
+    assert first_depth([np.array([0, 1, 2])], duration, np.array([1, 2]), np.random.default_rng(0)) == 0.75
+
+
+def test_budget_for_share_is_the_smallest_depth_reaching_the_share():
+    depth = np.array([0.3, 0.1, 0.2, 0.5])
+    weights = np.array([[1.0, 1.0, 1.0, 1.0], [0.0, 2.0, 1.0, 1.0]])
+    assert budget_for_share(depth, weights, np.array([0.5, 0.5])).tolist() == [0.2, 0.1]
 
 
 def test_ask_waits_out_dropped_connections_rate_limits_and_rejected_tokens(monkeypatch):
